@@ -6,6 +6,11 @@ Uso manual (útil durante o desenvolvimento do instalador):
     python -m migration_agent.service_windows start
     python -m migration_agent.service_windows stop
     python -m migration_agent.service_windows remove
+
+Quando o Windows SCM inicia o serviço de verdade, ele invoca o `.exe`
+registrado SEM argumento nenhum -- é `__main__.py` (`_dispatch_to_scm`)
+quem detecta esse caso e delega pra cá, já com logging em arquivo
+configurado (ver `%ProgramData%\\GuardianMigrationAgent\\agent.log`).
 """
 
 from __future__ import annotations
@@ -37,22 +42,44 @@ class MigrationAgentService(win32serviceutil.ServiceFramework):
 
     def __init__(self, args):
         super().__init__(args)
-        self.stop_event = win32event.CreateEvent(None, 0, 0, None)
-        self.runtime = AgentRuntime()
+        try:
+            self.stop_event = win32event.CreateEvent(None, 0, 0, None)
+            self.runtime = AgentRuntime()
+        except Exception:
+            logger.exception("Falha inicializando MigrationAgentService.__init__")
+            self._log_to_event_viewer("Falha ao inicializar o serviço (ver agent.log em %ProgramData%\\GuardianMigrationAgent\\)")
+            raise
 
     def SvcStop(self):
+        logger.info("SvcStop chamado -- parando o agent.")
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        self.runtime.stop()
+        try:
+            self.runtime.stop()
+        except Exception:
+            logger.exception("Falha em runtime.stop()")
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
-        self.runtime.start_background()
-        win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
+        try:
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+            logger.info("SvcDoRun iniciado -- subindo threads de fundo (UI local, peer-listener, poller).")
+            self.runtime.start_background()
+            logger.info("Threads de fundo no ar. Aguardando sinal de parada.")
+            win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
+        except Exception:
+            logger.exception("Falha fatal em SvcDoRun")
+            self._log_to_event_viewer("Falha fatal rodando o serviço (ver agent.log em %ProgramData%\\GuardianMigrationAgent\\)")
+            raise
+
+    def _log_to_event_viewer(self, message: str) -> None:
+        try:
+            servicemanager.LogErrorMsg(f"{self._svc_display_name_}: {message}")
+        except Exception:  # noqa: BLE001 - o Event Viewer é só um bônus, nunca pode mascarar o erro original
+            pass
 
 
 if __name__ == "__main__":
