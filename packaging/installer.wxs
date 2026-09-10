@@ -8,7 +8,7 @@
   entre versoes pra o MajorUpgrade funcionar corretamente).
 
   Sem acento em nenhuma string usada em atributo (Name/Description/
-  DowngradeErrorMessage/etc.) de proposito -- WiX v3 usa codepage 1252 por
+  DowngradeErrorMessage/etc.) de proposito: WiX v3 usa codepage 1252 por
   padrao e um erro real (LGHT0311) ja apareceu numa run de CI por causa de
   acentuacao numa dessas strings. Comentarios XML podem ter acento
   normalmente (nao viram string table do MSI).
