@@ -3,19 +3,29 @@
 # Rodar (no Windows, dentro do venv com pyinstaller instalado):
 #   pyinstaller packaging/build_exe.spec
 #
-# Gera dist/guardian-migration-agent/guardian-migration-agent.exe
+# Gera dist/guardian-migration-agent.exe (arquivo único -- ver nota abaixo)
 #
-# Issue #107: bug real encontrado numa instalação de verdade -- "Service
-# 'Guardian Migration Agent' failed to start". Causa raiz conhecida em
-# projetos PyInstaller + pywin32: pythoncomXX.dll/pywintypesXX.dll ficam
-# num diretório irmão (pywin32_system32), fora do pacote pywin32 "normal"
-# -- a análise estática do PyInstaller não pega esses DLLs sozinha, e sem
-# eles qualquer `import win32api`/`win32com`/`win32crypt` (usados em
-# crypto_store.py, commands.py, service_windows.py) falha no processo
-# congelado mesmo funcionando perfeitamente no venv de desenvolvimento.
-# Bundla os DLLs explicitamente abaixo em vez de depender só do passo de
-# pywin32_postinstall.py no workflow (mantido como reforço, não como única
-# defesa).
+# Issue #107: DOIS bugs reais encontrados em instalações de verdade, o
+# segundo só apareceu depois de corrigir o primeiro (mesmo sintoma na tela:
+# "Service 'Guardian Migration Agent' failed to start"):
+#
+# 1. pythoncomXX.dll/pywintypesXX.dll (usados por `import win32api`/
+#    `win32com`/`win32crypt` em crypto_store.py/commands.py/service_windows.py)
+#    ficam num diretório irmão (pywin32_system32), fora do pacote pywin32
+#    "normal" -- a análise estática do PyInstaller não pega esses DLLs
+#    sozinha. Corrigido bundlando-os explicitamente (`binaries` abaixo).
+#
+# 2. MAIS GRAVE, e a causa real de o erro persistir mesmo depois do (1):
+#    o modo "onedir" (EXE + COLLECT separados) gera o .exe MAIS uma pasta
+#    cheia de DLLs/runtime do Python ao lado -- o instalador (installer.wxs)
+#    só empacotava o .exe sozinho, nunca essa pasta. Ou seja: mesmo com os
+#    DLLs do pywin32 no lugar certo dentro da pasta de build, o MSI nunca
+#    levava a pasta pro cliente, só o executável (que sozinho não roda,
+#    faltando até o runtime do Python). Trocado pro modo "onefile": um
+#    único .exe autocontido, exatamente o que installer.wxs já esperava
+#    (um `<File>` só) -- mais simples que ensinar o WiX a empacotar uma
+#    pasta inteira (precisaria de heat.exe, outra ferramenta do WiX
+#    Toolset, pra "escanear" o diretório automaticamente).
 
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -67,20 +77,17 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Onefile: passa a.binaries/a.zipfiles/a.datas direto pro EXE() (sem
+# exclude_binaries e sem COLLECT depois) -- produz dist/guardian-migration-agent.exe
+# como arquivo único, autocontido.
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
-    name="guardian-migration-agent",
-    console=True,
-    icon=None,
-)
-
-coll = COLLECT(
-    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
+    [],
     name="guardian-migration-agent",
+    console=True,
+    icon=None,
 )

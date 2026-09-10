@@ -35,7 +35,8 @@
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="6BD4CDD6-6675-4C67-8754-1CE294F64B8F" Win64="yes">
         <!-- Aponta pra saida do PyInstaller (build_exe.spec) -->
-        <File Id="AgentExe" Source="..\dist\guardian-migration-agent\guardian-migration-agent.exe" KeyPath="yes" />
+        <!-- PyInstaller agora gera onefile (build_exe.spec): .exe unico, sem pasta ao lado -->
+        <File Id="AgentExe" Source="..\dist\guardian-migration-agent.exe" KeyPath="yes" />
 
         <!--
           Registra o proprio .exe como Windows Service. O binario congelado
