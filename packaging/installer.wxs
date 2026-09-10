@@ -1,13 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Template WiX (v3) do instalador MSI. Buildado automaticamente pelo
-  GitHub Actions (.github/workflows/build-agent-msi.yml, issue #107) --
-  mas NUNCA VALIDADO de ponta a ponta ainda (escrito sem acesso a uma
-  máquina Windows/WiX pra testar) -- a primeira execução real do workflow
-  é a primeira validação de verdade. Se falhar, o log da run mostra onde.
+  GitHub Actions (.github/workflows/build-agent-msi.yml, issue #107).
 
   UpgradeCode e o Guid do Component são fixos e reais (gerados uma vez,
-  não trocar depois -- UpgradeCode em particular precisa permanecer igual
+  não trocar depois: UpgradeCode em particular precisa permanecer igual
   entre versões pra o MajorUpgrade funcionar corretamente).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
@@ -37,7 +34,7 @@
         <!--
           Registra o próprio .exe como Windows Service. O binário congelado
           precisa saber se comportar quando iniciado pelo SCM sem
-          argumentos (ver service_windows.py -- win32serviceutil trata isso
+          argumentos (ver service_windows.py: win32serviceutil trata isso
           automaticamente quando o processo é iniciado pelo Service Control
           Manager).
         -->
