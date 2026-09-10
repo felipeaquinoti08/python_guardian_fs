@@ -1,0 +1,77 @@
+name: Build and publish Agent MSI
+
+# Issue #107: builda o Agent Python (PyInstaller) e empacota o instalador
+# (WiX v3 Toolset, via Chocolatey), depois publica automaticamente no
+# Guardian via POST /api/agent-installer/publish (token de máquina, ver
+# app/Services/Migration/AgentInstallerPublisher.php no repo principal).
+#
+# NUNCA VALIDADO de ponta a ponta (primeira execução real é a primeira
+# validação de verdade -- este workflow foi escrito sem acesso a uma
+# máquina Windows/WiX pra testar antes). Se falhar, o log da run no GitHub
+# Actions mostra exatamente onde -- ajustar a partir daí.
+#
+# Secrets necessários no repositório (Settings > Secrets and variables > Actions):
+#   AGENT_INSTALLER_PUBLISH_TOKEN -- mesmo valor de AGENT_INSTALLER_PUBLISH_TOKEN no .env do Guardian
+#   GUARDIAN_BASE_URL             -- ex: https://eap.cloudessential.tech
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: pywin32 post-install (registra pythoncom/pywintypes)
+        run: |
+          $postinstall = python -c "import win32com, os; print(os.path.join(os.path.dirname(win32com.__file__), '..', 'pywin32_postinstall.py'))"
+          python $postinstall -install
+        shell: pwsh
+        continue-on-error: true
+
+      - name: Build executável (PyInstaller)
+        run: pyinstaller packaging\build_exe.spec
+
+      - name: Instalar WiX Toolset v3
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build instalador (.msi)
+        shell: pwsh
+        run: |
+          $wixBin = Join-Path $env:WIX "bin"
+          & "$wixBin\candle.exe" packaging\installer.wxs -out packaging\installer.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou" }
+          & "$wixBin\light.exe" packaging\installer.wixobj -out dist\GuardianMigrationAgent.msi
+          if ($LASTEXITCODE -ne 0) { throw "light.exe falhou" }
+
+      - name: Upload artefato (backup, independente do publish)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuardianMigrationAgent-msi
+          path: dist/GuardianMigrationAgent.msi
+
+      - name: Publicar no Guardian
+        shell: pwsh
+        env:
+          PUBLISH_TOKEN: ${{ secrets.AGENT_INSTALLER_PUBLISH_TOKEN }}
+          GUARDIAN_BASE_URL: ${{ secrets.GUARDIAN_BASE_URL }}
+        run: |
+          curl.exe --fail -X POST "$env:GUARDIAN_BASE_URL/api/agent-installer/publish" `
+            -H "Authorization: Bearer $env:PUBLISH_TOKEN" `
+            -F "installer=@dist/GuardianMigrationAgent.msi;filename=GuardianMigrationAgent.msi"

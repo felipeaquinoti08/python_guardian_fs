@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Template WiX (v3) do instalador MSI. Buildado automaticamente pelo
+  GitHub Actions (.github/workflows/build-agent-msi.yml, issue #107) --
+  mas NUNCA VALIDADO de ponta a ponta ainda (escrito sem acesso a uma
+  máquina Windows/WiX pra testar) -- a primeira execução real do workflow
+  é a primeira validação de verdade. Se falhar, o log da run mostra onde.
+
+  UpgradeCode e o Guid do Component são fixos e reais (gerados uma vez,
+  não trocar depois -- UpgradeCode em particular precisa permanecer igual
+  entre versões pra o MajorUpgrade funcionar corretamente).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Guardian Migration Agent"
+           Language="1046"
+           Version="0.1.0.0"
+           Manufacturer="Guardian Cloud"
+           UpgradeCode="86454F58-AFCC-4C1E-BEC8-EAB061B132AF">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+
+    <MajorUpgrade DowngradeErrorMessage="Já existe uma versão mais nova do Guardian Migration Agent instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="GuardianMigrationAgent" />
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="6BD4CDD6-6675-4C67-8754-1CE294F64B8F">
+        <!-- Aponta pra saída do PyInstaller (build_exe.spec) -->
+        <File Id="AgentExe" Source="..\dist\guardian-migration-agent\guardian-migration-agent.exe" KeyPath="yes" />
+
+        <!--
+          Registra o próprio .exe como Windows Service. O binário congelado
+          precisa saber se comportar quando iniciado pelo SCM sem
+          argumentos (ver service_windows.py -- win32serviceutil trata isso
+          automaticamente quando o processo é iniciado pelo Service Control
+          Manager).
+        -->
+        <ServiceInstall Id="InstallService"
+                         Name="GuardianMigrationAgent"
+                         DisplayName="Guardian Migration Agent"
+                         Description="Agent de migracao de fileserver on-premises do Guardian."
+                         Type="ownProcess"
+                         Start="auto"
+                         ErrorControl="normal" />
+        <ServiceControl Id="ControlService"
+                         Name="GuardianMigrationAgent"
+                         Start="install"
+                         Stop="both"
+                         Remove="uninstall"
+                         Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="Guardian Migration Agent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Product>
+</Wix>

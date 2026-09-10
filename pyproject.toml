@@ -1,0 +1,19 @@
+[project]
+name = "guardian-migration-agent"
+version = "0.1.0"
+description = "Agent local (Windows) que expoe um fileserver on-premises como origem/destino do modulo de Migracao Universal do Guardian"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
