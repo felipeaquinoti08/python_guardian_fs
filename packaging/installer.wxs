@@ -21,7 +21,7 @@
            Manufacturer="Guardian Cloud"
            UpgradeCode="86454F58-AFCC-4C1E-BEC8-EAB061B132AF">
 
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of Guardian Migration Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -33,7 +33,7 @@
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="MainExecutable" Guid="6BD4CDD6-6675-4C67-8754-1CE294F64B8F">
+      <Component Id="MainExecutable" Guid="6BD4CDD6-6675-4C67-8754-1CE294F64B8F" Win64="yes">
         <!-- Aponta pra saida do PyInstaller (build_exe.spec) -->
         <File Id="AgentExe" Source="..\dist\guardian-migration-agent\guardian-migration-agent.exe" KeyPath="yes" />
 
