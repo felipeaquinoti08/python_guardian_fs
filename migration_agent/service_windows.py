@@ -68,6 +68,10 @@ class MigrationAgentService(win32serviceutil.ServiceFramework):
             )
             logger.info("SvcDoRun iniciado -- subindo threads de fundo (UI local, peer-listener, poller).")
             self.runtime.start_background()
+            # Sem isto, o SCM fica esperando confirmacao de que o servico
+            # subiu ate estourar o timeout padrao (~30s) e desistir --
+            # mesmo com as threads de fundo ja rodando normalmente.
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
             logger.info("Threads de fundo no ar. Aguardando sinal de parada.")
             win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
         except Exception:
