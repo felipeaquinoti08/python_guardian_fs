@@ -26,6 +26,42 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of Guardian Migration Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!--
+      Embutido pra nao depender do servidor de destino ja ter o runtime
+      (comum faltar em Server Core / instalacoes enxutas). VCRedistExe e
+      baixado pelo workflow do GitHub Actions antes do candle.exe/light.exe
+      (nao versionado no repo, ~25MB). RegistrySearch abaixo evita rodar o
+      instalador de novo se o runtime ja estiver presente.
+    -->
+    <Property Id="VCREDISTINSTALLED">
+      <RegistrySearch Id="VCRedistRegistrySearch"
+                       Root="HKLM"
+                       Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64"
+                       Name="Installed"
+                       Type="raw" />
+    </Property>
+
+    <Binary Id="VCRedistExe" SourceFile="vc_redist.x64.exe" />
+
+    <!--
+      Return="ignore" de proposito: o instalador da Microsoft retorna
+      codigos "de sucesso" que nao sao zero (3010 = reboot pendente, 1638 =
+      versao igual/mais nova ja instalada), e WiX trataria isso como falha
+      da Custom Action, abortando a instalacao inteira do agent por causa
+      de um runtime que, na pratica, ja esta ok. A RegistrySearch acima ja
+      evita a re-execucao redundante no caso comum.
+    -->
+    <CustomAction Id="InstallVCRedist"
+                  BinaryKey="VCRedistExe"
+                  ExeCommand="/quiet /norestart"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallVCRedist" Before="InstallFinalize">NOT Installed AND NOT VCREDISTINSTALLED</Custom>
+    </InstallExecuteSequence>
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="GuardianMigrationAgent" />

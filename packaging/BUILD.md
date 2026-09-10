@@ -16,9 +16,10 @@
   vezes não têm o **Visual C++ Redistributable** pré-instalado, que
   binários Python/pywin32 podem precisar. O build em modo "onefile" (ver
   abaixo) já embute os DLLs que o PyInstaller detectar automaticamente na
-  máquina de build -- mas se a instalação falhar de novo com algo tipo
-  "VCRUNTIME140.dll não encontrado", o `vc_redist.x64.exe` (Microsoft,
-  gratuito) precisa ser instalado à parte no servidor de destino.
+  máquina de build -- e, além disso, o próprio MSI agora **embute e
+  instala silenciosamente o `vc_redist.x64.exe`** (via Custom Action em
+  `installer.wxs`, só roda se o runtime ainda não estiver presente na
+  máquina de destino — não depende de internet no servidor).
 
 ## Caminho automático (GitHub Actions) — recomendado
 
@@ -95,7 +96,12 @@ que aparece pra qualquer causa de falha, não só permissão).
 `Guid` do `Component`) — não trocar depois de publicado, senão upgrades
 futuros param de reconhecer a instalação anterior.
 
+O `installer.wxs` embute `packaging\vc_redist.x64.exe` (não versionado no
+repo — baixar manualmente antes de compilar):
+
 ```powershell
+Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "packaging\vc_redist.x64.exe"
+
 candle.exe packaging\installer.wxs -out packaging\installer.wixobj
 light.exe packaging\installer.wixobj -out dist\GuardianMigrationAgent.msi
 ```

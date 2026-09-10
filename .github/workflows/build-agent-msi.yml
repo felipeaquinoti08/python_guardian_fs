@@ -71,6 +71,15 @@ jobs:
       - name: Instalar WiX Toolset v3
         run: choco install wixtoolset -y --no-progress
 
+      - name: Baixar Visual C++ Redistributable (embutido no MSI)
+        # Link permanente oficial da Microsoft (sempre aponta pra ultima
+        # versao do VC++ 2015-2022 x64) -- embutido no installer.wxs via
+        # <Binary SourceFile="vc_redist.x64.exe">, resolvido por caminho
+        # relativo ao proprio installer.wxs (packaging\).
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "packaging\vc_redist.x64.exe"
+
       - name: Build instalador (.msi)
         shell: pwsh
         run: |

@@ -6,3 +6,4 @@ build/
 dist/
 *.egg-info/
 packaging/*.wixobj
+packaging/vc_redist.x64.exe
