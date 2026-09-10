@@ -46,12 +46,24 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: pywin32 post-install (registra pythoncom/pywintypes)
-        run: |
-          $postinstall = python -c "import win32com, os; print(os.path.join(os.path.dirname(win32com.__file__), '..', 'pywin32_postinstall.py'))"
-          python $postinstall -install
+      - name: pywin32 post-install (registra pythoncom/pywintypes no PATH)
+        # Issue #107: bug real numa instalação de verdade -- "Service ...
+        # failed to start" -- causa raiz era pythoncomXX.dll/pywintypesXX.dll
+        # não resolvidos pelo processo congelado. O caminho usado aqui antes
+        # (relativo a win32com.__file__) estava errado e o continue-on-error
+        # mascarou a falha silenciosamente; localizando via sysconfig agora
+        # (Scripts/ é onde pip realmente instala o script) e sem mascarar
+        # erro -- esse passo é só um REFORÇO, a defesa principal é bundlar
+        # os DLLs direto no build_exe.spec (binaries=[...]).
         shell: pwsh
-        continue-on-error: true
+        run: |
+          $scriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+          $postinstall = Join-Path $scriptsDir "pywin32_postinstall.py"
+          if (Test-Path $postinstall) {
+            python $postinstall -install
+          } else {
+            Write-Warning "pywin32_postinstall.py nao encontrado em $scriptsDir -- seguindo so com o bundling explicito no build_exe.spec"
+          }
 
       - name: Build executável (PyInstaller)
         run: pyinstaller packaging\build_exe.spec
