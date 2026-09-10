@@ -87,14 +87,16 @@ jobs:
         # build/versao do PyInstaller. Listar isso a mao no installer.wxs
         # seria fragil; heat.exe (harvester do proprio WiX Toolset) escaneia
         # a pasta e gera o fragmento (.wxs) com todos os arquivos sozinho.
-        # "-platform x64" e obrigatorio: sem isso o heat.exe gera componentes
-        # 32-bit por padrao, o que quebra o build com ICE80 (mesmo erro ja
-        # visto antes no MainExecutable, so que agora nos arquivos gerados).
+        # heat.exe gera <Component> em 32-bit por padrao ao escanear um
+        # diretorio -- "-platform x64" NAO tem efeito nesse modo de harvest
+        # (testado, ICE80 continuou aparecendo mesmo com a flag). Corrigido
+        # aplicando uma transformacao XSLT (-t) que adiciona Win64="yes" em
+        # todo Component gerado -- ver packaging/heat_x64_transform.xsl.
         shell: pwsh
         run: |
           $wixBin = Join-Path $env:WIX "bin"
           $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
-          & "$wixBin\heat.exe" dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -platform x64 -out packaging\internal_files.wxs
+          & "$wixBin\heat.exe" dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -t packaging\heat_x64_transform.xsl -out packaging\internal_files.wxs
           if ($LASTEXITCODE -ne 0) { throw "heat.exe falhou" }
 
       - name: Build instalador (.msi)
@@ -113,10 +115,21 @@ jobs:
           name: GuardianMigrationAgent-msi
           path: dist/GuardianMigrationAgent.msi
 
+      - name: Calcula numero de build com zero-padding
+        # A lista de Releases do GitHub ordena a tag como STRING -- sem
+        # zero-padding, "build-10"/"build-11" aparecem antes de
+        # "build-7"/"build-8"/"build-9" (o caractere "1" e "menor" que "7").
+        # Zero-padding pra 4 digitos resolve a ordenacao.
+        id: buildnum
+        shell: pwsh
+        run: |
+          $padded = "{0:D4}" -f [int]"${{ github.run_number }}"
+          echo "padded=$padded" >> $env:GITHUB_OUTPUT
+
       - name: Criar GitHub Release com o .msi anexado
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
+          tag_name: build-${{ steps.buildnum.outputs.padded }}
           name: "Agent build #${{ github.run_number }}"
           files: dist/GuardianMigrationAgent.msi
           generate_release_notes: true

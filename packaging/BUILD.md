@@ -118,7 +118,7 @@ repo — baixar manualmente antes de compilar) e referencia um
 Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "packaging\vc_redist.x64.exe"
 
 $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
-heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -platform x64 -out packaging\internal_files.wxs
+heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -t packaging\heat_x64_transform.xsl -out packaging\internal_files.wxs
 
 candle.exe "-dInternalSourceDir=$internalDir" packaging\installer.wxs packaging\internal_files.wxs -out packaging\
 light.exe packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
