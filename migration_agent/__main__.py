@@ -31,8 +31,35 @@ import logging
 import logging.handlers
 import platform
 import sys
+import traceback
+from datetime import datetime
 
-from .agent_runtime import AgentRuntime
+
+def _emergency_log(context: str) -> None:
+    """Ultima linha de defesa pra diagnostico. Issue #107: numa instalacao
+    real confirmamos que o .exe roda e crasha (custom action do MSI
+    retornou codigo 1), mas C:\\ProgramData\\GuardianMigrationAgent nunca
+    chegou a ser criada -- ou seja, ate o _setup_file_logging() abaixo
+    (que tambem tenta criar essa pasta) estava falhando silenciosamente,
+    sem deixar rastro nenhum de qual era o erro real. Grava direto na raiz
+    do C:\\, que nao precisa criar pasta nenhuma e e o lugar mais dificil
+    de falhar por permissao (mesmo como LocalSystem)."""
+    if platform.system() != "Windows":
+        return
+    try:
+        with open(r"C:\guardian_agent_crash.log", "a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {context} ({datetime.now().isoformat()}) ===\n")
+            fh.write(traceback.format_exc())
+            fh.write("\n")
+    except Exception:  # noqa: BLE001 - literalmente a ultima linha de defesa, nao pode lancar
+        pass
+
+
+try:
+    from .agent_runtime import AgentRuntime
+except Exception:
+    _emergency_log("import migration_agent.agent_runtime")
+    raise
 
 
 def _cmd_run(_args: argparse.Namespace) -> None:
@@ -107,24 +134,32 @@ def _dispatch_to_scm() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) == 1:
-        _dispatch_to_scm()
-        return
+    try:
+        if len(sys.argv) == 1:
+            _dispatch_to_scm()
+            return
 
-    parser = argparse.ArgumentParser(prog="migration_agent")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+        parser = argparse.ArgumentParser(prog="migration_agent")
+        subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("run", help="Roda em foreground (dev/teste)").set_defaults(func=_cmd_run)
-    subparsers.add_parser(
-        "selftest", help="Verificacao rapida (usada pelo instalador MSI)"
-    ).set_defaults(func=_cmd_selftest)
+        subparsers.add_parser("run", help="Roda em foreground (dev/teste)").set_defaults(func=_cmd_run)
+        subparsers.add_parser(
+            "selftest", help="Verificacao rapida (usada pelo instalador MSI)"
+        ).set_defaults(func=_cmd_selftest)
 
-    service_parser = subparsers.add_parser("service", help="Gerencia o Windows Service")
-    service_parser.add_argument("action", choices=["install", "start", "stop", "remove"])
-    service_parser.set_defaults(func=_cmd_service)
+        service_parser = subparsers.add_parser("service", help="Gerencia o Windows Service")
+        service_parser.add_argument("action", choices=["install", "start", "stop", "remove"])
+        service_parser.set_defaults(func=_cmd_service)
 
-    args = parser.parse_args()
-    args.func(args)
+        args = parser.parse_args()
+        args.func(args)
+    except Exception:
+        # Rede de seguranca final: qualquer excecao nao tratada em qualquer
+        # comando (inclusive um ImportError silencioso escondido atras de
+        # um _setup_file_logging() que tambem falhou) grava o traceback
+        # real em C:\guardian_agent_crash.log antes de deixar propagar.
+        _emergency_log("main")
+        raise
 
 
 if __name__ == "__main__":

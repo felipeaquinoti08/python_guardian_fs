@@ -80,6 +80,31 @@ def test_main_selftest_constructs_agent_runtime(monkeypatch, tmp_path, capsys):
     assert "OK" in capsys.readouterr().out
 
 
+def test_main_emergency_logs_and_reraises_on_unhandled_exception(monkeypatch):
+    """Issue #107: numa instalacao real o .exe crashou (custom action do
+    MSI retornou codigo 1) mas C:\\ProgramData nunca chegou a ser criada --
+    ou seja, ate o _setup_file_logging() estava falhando silenciosamente.
+    main() precisa de uma rede de seguranca que nao dependa dela."""
+    called = {"context": None}
+    monkeypatch.setattr(main_module, "_emergency_log", lambda context: called.__setitem__("context", context))
+
+    def _boom(_args):
+        raise RuntimeError("falha simulada")
+
+    monkeypatch.setattr(main_module, "_cmd_run", _boom)
+    monkeypatch.setattr(sys, "argv", ["guardian-migration-agent.exe", "run"])
+
+    with pytest.raises(RuntimeError):
+        main_module.main()
+
+    assert called["context"] == "main"
+
+
+def test_emergency_log_is_noop_outside_windows():
+    # Neste ambiente (Linux, testes) _emergency_log nao deve criar nada nem lancar.
+    main_module._emergency_log("teste")
+
+
 def test_dispatch_to_scm_logs_and_reraises_when_service_windows_unavailable(monkeypatch, tmp_path):
     monkeypatch.setattr("migration_agent.config.default_state_dir", lambda: tmp_path)
 
