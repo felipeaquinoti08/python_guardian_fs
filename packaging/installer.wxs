@@ -58,8 +58,26 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!--
+      Diagnostico: roda o .exe fora do Windows Service, logo apos os
+      arquivos serem copiados e antes de registrar o servico. Se o
+      executavel nao conseguir nem rodar nesse ambiente (bloqueio de
+      politica, DLL faltando, etc), o msiexec falha aqui com o erro real
+      do Windows, em vez do generico "Error 1920" que a falha do
+      StartServices sempre mostra, seja qual for a causa de verdade.
+      Impersonate="no" roda como LocalSystem, a mesma conta que o servico
+      de verdade vai usar depois.
+    -->
+    <CustomAction Id="RunSelfTest"
+                  FileKey="AgentExe"
+                  ExeCommand="selftest"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
     <InstallExecuteSequence>
       <Custom Action="InstallVCRedist" Before="InstallFinalize">NOT Installed AND NOT VCREDISTINSTALLED</Custom>
+      <Custom Action="RunSelfTest" After="InstallFiles">NOT Installed</Custom>
     </InstallExecuteSequence>
 
     <Directory Id="TARGETDIR" Name="SourceDir">

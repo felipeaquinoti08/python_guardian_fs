@@ -41,6 +41,23 @@ def _cmd_run(_args: argparse.Namespace) -> None:
     runtime.start_foreground()
 
 
+def _cmd_selftest(_args: argparse.Namespace) -> None:
+    """Usado como Custom Action do MSI (installer.wxs), logo apos copiar os
+    arquivos e antes de registrar o servico -- roda o .exe fora do Windows
+    Service pra descobrir se ele consegue nem executar naquele ambiente
+    (bloqueio de politica, DLL faltando, etc). Se falhar aqui, o msiexec
+    mostra o erro real do Windows em vez do generico "Error 1920"."""
+    _setup_file_logging()
+    logger = logging.getLogger(__name__)
+    try:
+        runtime = AgentRuntime()
+        logger.info("selftest: AgentRuntime() construido com sucesso")
+        print("OK")
+    except Exception:
+        logger.exception("selftest falhou")
+        raise
+
+
 def _cmd_service(args: argparse.Namespace) -> None:
     if platform.system() != "Windows":
         print("O modo 'service' só está disponível no Windows.", file=sys.stderr)
@@ -98,6 +115,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("run", help="Roda em foreground (dev/teste)").set_defaults(func=_cmd_run)
+    subparsers.add_parser(
+        "selftest", help="Verificacao rapida (usada pelo instalador MSI)"
+    ).set_defaults(func=_cmd_selftest)
 
     service_parser = subparsers.add_parser("service", help="Gerencia o Windows Service")
     service_parser.add_argument("action", choices=["install", "start", "stop", "remove"])

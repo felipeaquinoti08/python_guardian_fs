@@ -71,6 +71,15 @@ def test_main_with_run_argument_uses_normal_cli(monkeypatch):
     assert called["n"] == 1
 
 
+def test_main_selftest_constructs_agent_runtime(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("migration_agent.config.default_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["guardian-migration-agent.exe", "selftest"])
+
+    main_module.main()
+
+    assert "OK" in capsys.readouterr().out
+
+
 def test_dispatch_to_scm_logs_and_reraises_when_service_windows_unavailable(monkeypatch, tmp_path):
     monkeypatch.setattr("migration_agent.config.default_state_dir", lambda: tmp_path)
 
