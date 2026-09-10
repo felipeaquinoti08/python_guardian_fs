@@ -64,15 +64,23 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="GuardianMigrationAgent" />
+        <Directory Id="INSTALLFOLDER" Name="GuardianMigrationAgent">
+          <!--
+            Populado em build time pelo heat.exe (harvester do WiX Toolset,
+            build-agent-msi.yml) escaneando dist\guardian-migration-agent\_internal\
+            (DLLs/runtime do Python, PyInstaller modo onedir). O
+            ComponentGroup gerado (Id="InternalFiles") e referenciado na
+            Feature abaixo.
+          -->
+          <Directory Id="INTERNALDIR" Name="_internal" />
+        </Directory>
       </Directory>
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="6BD4CDD6-6675-4C67-8754-1CE294F64B8F" Win64="yes">
-        <!-- Aponta pra saida do PyInstaller (build_exe.spec) -->
-        <!-- PyInstaller agora gera onefile (build_exe.spec): .exe unico, sem pasta ao lado -->
-        <File Id="AgentExe" Source="..\dist\guardian-migration-agent.exe" KeyPath="yes" />
+        <!-- Aponta pra saida do PyInstaller (build_exe.spec), modo onedir -->
+        <File Id="AgentExe" Source="..\dist\guardian-migration-agent\guardian-migration-agent.exe" KeyPath="yes" />
 
         <!--
           Registra o proprio .exe como Windows Service. O binario congelado
@@ -99,6 +107,8 @@
 
     <Feature Id="MainFeature" Title="Guardian Migration Agent" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
+      <!-- Gerado pelo heat.exe em build time, ver comentario no INTERNALDIR acima -->
+      <ComponentGroupRef Id="InternalFiles" />
     </Feature>
   </Product>
 </Wix>

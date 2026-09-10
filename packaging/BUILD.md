@@ -14,12 +14,19 @@
   ambiente que precisa funcionar de verdade é o Server.
 - Instalações "Server Core" (sem interface gráfica) ou muito enxutas às
   vezes não têm o **Visual C++ Redistributable** pré-instalado, que
-  binários Python/pywin32 podem precisar. O build em modo "onefile" (ver
-  abaixo) já embute os DLLs que o PyInstaller detectar automaticamente na
-  máquina de build -- e, além disso, o próprio MSI agora **embute e
+  binários Python/pywin32 podem precisar. O próprio MSI agora **embute e
   instala silenciosamente o `vc_redist.x64.exe`** (via Custom Action em
   `installer.wxs`, só roda se o runtime ainda não estiver presente na
   máquina de destino — não depende de internet no servidor).
+- **PyInstaller em modo "onedir" (não "onefile")** de propósito: um `.exe`
+  "onefile" precisa se auto-extrair numa pasta temporária *toda vez* que é
+  executado, inclusive toda vez que o Windows tenta iniciar o serviço --
+  isso pode ficar lento o bastante (antivírus escaneando cada arquivo
+  extraído) pra estourar o timeout de ~30s que o SCM dá pro serviço
+  responder (erro 1920/1053, "did not respond in a timely fashion",
+  descoberto analisando o log verbose do `msiexec` numa instalação real:
+  39s entre o Windows tentar iniciar o serviço e o erro). Com "onedir" os
+  arquivos ficam soltos em disco, extraídos só uma vez na instalação.
 
 ## Caminho automático (GitHub Actions) — recomendado
 
@@ -48,13 +55,17 @@ versão nova tiver problema.
 (não dava pra prever sem Windows/WiX disponível durante o desenvolvimento):
 erro de sintaxe XML (`--` dentro de comentário), string acentuada
 incompatível com a codepage do MSI, componente 32-bit num diretório
-64-bit, DLLs do pywin32 não embutidos, e o modo "onedir" do PyInstaller
-gerando uma pasta que o instalador nunca empacotava (só o `.exe` sozinho)
--- corrigido trocando pro modo "onefile" (ver seção 1 abaixo).
+64-bit, DLLs do pywin32 não embutidos, modo "onedir" do PyInstaller
+gerando uma pasta que o instalador não empacotava (resolvido trocando pra
+"onefile" e depois, ao investigar o log verbose do `msiexec` numa
+instalação real, revertido de volta pra "onedir" por causa da lentidão de
+auto-extração -- ver seção "Compatibilidade" acima -- agora com `heat.exe`
+harvestando a pasta `_internal\` automaticamente em vez de listar arquivos
+a mão).
 
 ## Caminho manual (fallback, ou pra debugar um passo específico)
 
-### 1. Gerar o executável (PyInstaller, modo onefile)
+### 1. Gerar o executável (PyInstaller, modo onedir)
 
 ```powershell
 cd migration-agent
@@ -65,10 +76,10 @@ pip install -r requirements.txt pyinstaller
 pyinstaller packaging\build_exe.spec
 ```
 
-Saída esperada: **um único arquivo** `dist\guardian-migration-agent.exe`
-(sem pasta ao lado -- o spec usa modo "onefile", tudo embutido no próprio
-`.exe`, incluindo os DLLs do pywin32 que `build_exe.spec` bundla
-explicitamente).
+Saída esperada: `dist\guardian-migration-agent\guardian-migration-agent.exe`
+(o lançador) + `dist\guardian-migration-agent\_internal\` (DLLs/runtime do
+Python, incluindo os do pywin32 que `build_exe.spec` bundla
+explicitamente) -- modo "onedir", não gera mais um `.exe` único.
 
 Ponto de atenção conhecido (comum em projetos PyInstaller + pywin32): rodar
 o script de pós-instalação do pywin32 (`python Scripts\pywin32_postinstall.py -install`)
@@ -78,11 +89,12 @@ explícito já feito no spec.
 ### 2. Validar o serviço manualmente (antes de empacotar o MSI)
 
 ```powershell
-dist\guardian-migration-agent.exe service install
-dist\guardian-migration-agent.exe service start
+cd dist\guardian-migration-agent
+.\guardian-migration-agent.exe service install
+.\guardian-migration-agent.exe service start
 # conferir em services.msc que "Guardian Migration Agent" está rodando
-dist\guardian-migration-agent.exe service stop
-dist\guardian-migration-agent.exe service remove
+.\guardian-migration-agent.exe service stop
+.\guardian-migration-agent.exe service remove
 ```
 
 Se `service start` falhar, rodando direto assim (fora do instalador) o
@@ -97,13 +109,19 @@ que aparece pra qualquer causa de falha, não só permissão).
 futuros param de reconhecer a instalação anterior.
 
 O `installer.wxs` embute `packaging\vc_redist.x64.exe` (não versionado no
-repo — baixar manualmente antes de compilar):
+repo — baixar manualmente antes de compilar) e referencia um
+`ComponentGroup` (`InternalFiles`) que precisa ser gerado antes por
+`heat.exe` (harvester do próprio WiX Toolset), escaneando a pasta
+`_internal\` do PyInstaller:
 
 ```powershell
 Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "packaging\vc_redist.x64.exe"
 
-candle.exe packaging\installer.wxs -out packaging\installer.wixobj
-light.exe packaging\installer.wixobj -out dist\GuardianMigrationAgent.msi
+$internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
+heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -out packaging\internal_files.wxs
+
+candle.exe "-dInternalSourceDir=$internalDir" packaging\installer.wxs packaging\internal_files.wxs -out packaging\
+light.exe packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
 ```
 
 ### 4. Publicar manualmente

@@ -80,13 +80,28 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "packaging\vc_redist.x64.exe"
 
+      - name: Harvestar dependencias do PyInstaller (heat.exe)
+        # Issue #107: PyInstaller volta a gerar modo "onedir" (ver
+        # build_exe.spec) -- dist\guardian-migration-agent\_internal\ tem
+        # dezenas de DLLs/arquivos do runtime do Python que mudam a cada
+        # build/versao do PyInstaller. Listar isso a mao no installer.wxs
+        # seria fragil; heat.exe (harvester do proprio WiX Toolset) escaneia
+        # a pasta e gera o fragmento (.wxs) com todos os arquivos sozinho.
+        shell: pwsh
+        run: |
+          $wixBin = Join-Path $env:WIX "bin"
+          $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
+          & "$wixBin\heat.exe" dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -out packaging\internal_files.wxs
+          if ($LASTEXITCODE -ne 0) { throw "heat.exe falhou" }
+
       - name: Build instalador (.msi)
         shell: pwsh
         run: |
           $wixBin = Join-Path $env:WIX "bin"
-          & "$wixBin\candle.exe" packaging\installer.wxs -out packaging\installer.wixobj
+          $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
+          & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" packaging\installer.wxs packaging\internal_files.wxs -out packaging\
           if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou" }
-          & "$wixBin\light.exe" packaging\installer.wixobj -out dist\GuardianMigrationAgent.msi
+          & "$wixBin\light.exe" packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
           if ($LASTEXITCODE -ne 0) { throw "light.exe falhou" }
 
       - name: Upload artefato (backup de curto prazo, independente da Release)
