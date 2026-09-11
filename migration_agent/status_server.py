@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -125,6 +126,24 @@ def make_handler(config_store: ConfigStore, state: RuntimeState):
     return Handler
 
 
+class _LocalOnlyHTTPServer(ThreadingHTTPServer):
+    """Evita o `socket.getfqdn()` que `HTTPServer.server_bind()` roda por
+    padrão -- esse lookup de DNS reverso pode travar por dezenas de
+    segundos em ambientes corporativos com DNS lento/mal configurado
+    (issue #107: essa era a causa real do timeout de ~30s do SCM ao
+    iniciar o Windows Service -- não tinha nada a ver com onefile/onedir
+    nem com o resto do empacotamento, só apareceu porque o `selftest`
+    nunca chama `start_background()`/liga este servidor). Como só
+    escutamos em 127.0.0.1, `server_name` não precisa ser um FQDN de
+    verdade."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def make_server(config_store: ConfigStore, state: RuntimeState, port: int) -> ThreadingHTTPServer:
     handler_cls = make_handler(config_store, state)
-    return ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    return _LocalOnlyHTTPServer(("127.0.0.1", port), handler_cls)
