@@ -39,10 +39,16 @@ class WindowsDpapiSecretStore(SecretStore):
         self._win32crypt = win32crypt
 
     def encrypt(self, data: bytes) -> bytes:
-        import win32con  # type: ignore
+        # CRYPTPROTECT_LOCAL_MACHINE mora em win32cryptcon, NAO em win32con
+        # (bug real, issue #109: so foi exercido de verdade quando o
+        # bootstrap de senha da UI local passou a chamar encrypt() em todo
+        # start do servico -- antes disso so rodava apos um pareamento de
+        # verdade, entao esse AttributeError nunca tinha aparecido, mesmo
+        # jah estando quebrado desde sempre).
+        import win32cryptcon  # type: ignore
 
         blob = self._win32crypt.CryptProtectData(
-            data, "guardian-migration-agent", None, None, None, win32con.CRYPTPROTECT_LOCAL_MACHINE
+            data, "guardian-migration-agent", None, None, None, win32cryptcon.CRYPTPROTECT_LOCAL_MACHINE
         )
         return blob
 
