@@ -100,13 +100,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "heat.exe falhou" }
 
       - name: Build instalador (.msi)
+        # Issue #107: -ext WixUIExtension necessario a partir daqui pro
+        # wizard com tela de atalhos opcionais (Menu Iniciar/Area de
+        # Trabalho, ver <UIRef Id="WixUI_Minimal"> no installer.wxs) --
+        # sem essa extensao candle.exe/light.exe nao reconhecem
+        # WixUI_Minimal nem os elementos <UI>/<Publish> que dependem dela.
         shell: pwsh
         run: |
           $wixBin = Join-Path $env:WIX "bin"
           $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
-          & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" packaging\installer.wxs packaging\internal_files.wxs -out packaging\
+          & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
           if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou" }
-          & "$wixBin\light.exe" packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
+          & "$wixBin\light.exe" -ext WixUIExtension packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
           if ($LASTEXITCODE -ne 0) { throw "light.exe falhou" }
 
       - name: Upload artefato (backup de curto prazo, independente da Release)

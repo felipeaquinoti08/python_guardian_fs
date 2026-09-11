@@ -80,6 +80,22 @@ def test_main_selftest_constructs_agent_runtime(monkeypatch, tmp_path, capsys):
     assert "OK" in capsys.readouterr().out
 
 
+def test_main_open_ui_opens_browser_at_persisted_port(monkeypatch, tmp_path):
+    monkeypatch.setattr("migration_agent.config.default_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["guardian-migration-agent.exe", "open-ui"])
+
+    from migration_agent.config import ConfigStore
+
+    port = ConfigStore(tmp_path).load().local_ui_port
+
+    opened = {}
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.setdefault("url", url))
+
+    main_module.main()
+
+    assert opened["url"] == f"http://127.0.0.1:{port}"
+
+
 def test_main_emergency_logs_and_reraises_on_unhandled_exception(monkeypatch):
     """Issue #107: numa instalacao real o .exe crashou (custom action do
     MSI retornou codigo 1) mas C:\\ProgramData nunca chegou a ser criada --

@@ -44,6 +44,16 @@
     <Binary Id="VCRedistExe" SourceFile="vc_redist.x64.exe" />
 
     <!--
+      Issue #107: atalhos opcionais de Menu Iniciar/Area de Trabalho.
+      Propriedades publicas (nome em maiusculas) com valor padrao "1"
+      (cria os dois por padrao) -- tambem podem ser setadas direto na
+      linha de comando pra instalacoes silenciosas/automatizadas, ex:
+      msiexec /i GuardianMigrationAgent.msi /qb INSTALLDESKTOPSHORTCUT=0
+    -->
+    <Property Id="INSTALLSTARTMENUSHORTCUT" Value="1" />
+    <Property Id="INSTALLDESKTOPSHORTCUT" Value="1" />
+
+    <!--
       Return="ignore" de proposito: o instalador da Microsoft retorna
       codigos "de sucesso" que nao sao zero (3010 = reboot pendente, 1638 =
       versao igual/mais nova ja instalada), e WiX trataria isso como falha
@@ -93,6 +103,11 @@
           <Directory Id="INTERNALDIR" Name="_internal" />
         </Directory>
       </Directory>
+      <!-- Issue #107: atalhos opcionais (ver Property/ComponentGroup abaixo) -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Guardian Migration Agent" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
@@ -123,10 +138,104 @@
       </Component>
     </ComponentGroup>
 
+    <!--
+      Issue #107: atalhos opcionais de Menu Iniciar/Area de Trabalho,
+      apontando pro proprio .exe com o subcomando "open-ui" (abre a UI
+      local de pareamento no navegador -- ver migration_agent/__main__.py,
+      _cmd_open_ui). Cada Component so e instalado se a Property
+      correspondente (marcada via checkbox no wizard, ver <UI> abaixo, ou
+      passada na linha de comando) estiver com valor "1" -- controlado
+      pela <Condition> de cada Component.
+    -->
+    <ComponentGroup Id="ShortcutComponents">
+      <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="286F6703-4E92-4FD5-ACB4-7EDDC1CE4B65" Win64="yes">
+        <!--
+          "= 1" explicito (nao so o nome da property sozinho): um
+          CheckBox do WiX sem valor "desmarcado" definido so REMOVE a
+          property (fica vazia) quando desmarcado -- mas passar
+          INSTALLSTARTMENUSHORTCUT=0 na linha de comando (instalacao
+          silenciosa) deixaria a property com a string nao-vazia "0",
+          que uma condicao so-com-o-nome trataria como verdadeiro por
+          engano. "= 1" cobre os dois casos (vazio E "0") como falso.
+        -->
+        <Condition>INSTALLSTARTMENUSHORTCUT = "1"</Condition>
+        <Shortcut Id="StartMenuShortcutFile"
+                  Name="Guardian Migration Agent"
+                  Description="Abrir a UI de pareamento do Guardian Migration Agent"
+                  Target="[#AgentExe]"
+                  Arguments="open-ui"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\GuardianCloud\GuardianMigrationAgent"
+                       Name="StartMenuShortcutInstalled"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="1EF44ACE-6A17-4ABA-9861-CC3BC120BB34" Win64="yes">
+        <Condition>INSTALLDESKTOPSHORTCUT = "1"</Condition>
+        <Shortcut Id="DesktopShortcutFile"
+                  Name="Guardian Migration Agent"
+                  Description="Abrir a UI de pareamento do Guardian Migration Agent"
+                  Target="[#AgentExe]"
+                  Arguments="open-ui"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\GuardianCloud\GuardianMigrationAgent"
+                       Name="DesktopShortcutInstalled"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
     <Feature Id="MainFeature" Title="Guardian Migration Agent" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
       <!-- Gerado pelo heat.exe em build time, ver comentario no INTERNALDIR acima -->
       <ComponentGroupRef Id="InternalFiles" />
+      <ComponentGroupRef Id="ShortcutComponents" />
     </Feature>
+
+    <!--
+      Issue #107: wizard minimo (WixUI_Minimal, requer WixUIExtension --
+      ver -ext no build-agent-msi.yml) com uma tela extra (ShortcutsDlg)
+      inserida entre a tela de boas-vindas e a de licenca, com checkboxes
+      pras duas Property acima. Padrao documentado do proprio WiX pra
+      inserir uma tela customizada dentro de uma sequencia WixUI_* pronta:
+      republica os eventos "Next"/"Back" dos dialogs vizinhos (WelcomeDlg/
+      LicenseAgreementDlg) com Order maior, que substitui o alvo definido
+      originalmente por WixUI_Minimal.
+    -->
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+    <UI>
+      <UIRef Id="WixUI_Minimal" />
+
+      <Dialog Id="ShortcutsDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUIBannerBmp" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="Atalhos" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Escolha quais atalhos criar para o Guardian Migration Agent." />
+
+        <Control Id="StartMenuCheckBox" Type="CheckBox" X="25" Y="65" Width="300" Height="17" Property="INSTALLSTARTMENUSHORTCUT" CheckBoxValue="1" Text="Criar atalho no Menu Iniciar" />
+        <Control Id="DesktopCheckBox" Type="CheckBox" X="25" Y="90" Width="300" Height="17" Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Criar atalho na Area de Trabalho" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="&lt; Voltar">
+          <Publish Event="NewDialog" Value="WelcomeDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Avancar &gt;">
+          <Publish Event="NewDialog" Value="LicenseAgreementDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancelar">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="ShortcutsDlg" Order="2">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="ShortcutsDlg" Order="2">1</Publish>
+    </UI>
   </Product>
 </Wix>

@@ -120,9 +120,14 @@ Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile
 $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
 heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -t packaging\heat_x64_transform.xsl -out packaging\internal_files.wxs
 
-candle.exe "-dInternalSourceDir=$internalDir" packaging\installer.wxs packaging\internal_files.wxs -out packaging\
-light.exe packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
+candle.exe "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
+light.exe -ext WixUIExtension packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
 ```
+
+`-ext WixUIExtension` é necessário desde que o instalador ganhou um wizard
+(`WixUI_Minimal` + tela extra de atalhos, ver seção de atalhos abaixo) --
+vem junto com o pacote `wixtoolset` do Chocolatey, não precisa instalar
+nada a mais.
 
 ### 4. Publicar manualmente
 
@@ -136,10 +141,34 @@ curl.exe --fail -X POST "https://SEU_GUARDIAN/api/agent-installer/publish" `
 a pedido do usuário -- o publish automático via CI cobre esse fluxo. O
 endpoint continua existindo como fallback manual, restrito a Super Admin.)
 
+## Atalhos opcionais (Menu Iniciar / Área de Trabalho)
+
+O instalador (rodando com UI completa, ex: dando duplo clique no `.msi`)
+mostra uma tela com dois checkboxes -- ambos marcados por padrão -- pra
+criar atalho no Menu Iniciar e/ou na Área de Trabalho. Cada atalho aponta
+pro próprio `.exe` com o argumento `open-ui`, que abre no navegador a UI
+local de pareamento na porta persistida em `config.json` (a porta é
+escolhida dinamicamente na primeira execução, por isso o atalho não pode
+apontar direto pra uma URL fixa).
+
+Com `/qb`/`/qn` (instalação silenciosa, como o Guardian dispara via
+`AgentInstallerPublisher.php`) a tela do wizard não aparece -- os dois
+atalhos são criados por padrão mesmo assim. Pra desativar um deles numa
+instalação silenciosa, passar a propriedade correspondente:
+
+```powershell
+msiexec /i GuardianMigrationAgent.msi /qb INSTALLDESKTOPSHORTCUT=0
+msiexec /i GuardianMigrationAgent.msi /qb INSTALLSTARTMENUSHORTCUT=0
+```
+
 ## Checklist de validação manual (numa VM Windows limpa)
 
 - [ ] Instalar o MSI — serviço "Guardian Migration Agent" aparece em
       `services.msc`, iniciado automaticamente.
+- [ ] Instalar dando duplo clique no `.msi` (não via linha de comando) —
+      a tela de atalhos aparece, com os dois checkboxes marcados por
+      padrão. Desmarcar um deles e confirmar que só o outro atalho é
+      criado.
 - [ ] Se falhar: rodar `guardian-migration-agent.exe service start`
       direto no console primeiro (erro real aparece ali), e/ou checar o
       Visualizador de Eventos → Windows Logs → Application.

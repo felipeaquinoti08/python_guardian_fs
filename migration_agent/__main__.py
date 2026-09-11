@@ -85,6 +85,21 @@ def _cmd_selftest(_args: argparse.Namespace) -> None:
         raise
 
 
+def _cmd_open_ui(_args: argparse.Namespace) -> None:
+    """Abre a UI local de pareamento/status no navegador padrao. Alvo dos
+    atalhos opcionais de Menu Iniciar/Area de Trabalho do instalador
+    (issue #107) -- a porta e escolhida dinamicamente na primeira
+    execucao (ver config.py::_pick_free_port) e persistida em
+    config.json, entao o atalho nao pode apontar direto pra uma URL
+    fixa: precisa perguntar pro proprio agent qual porta esta em uso."""
+    import webbrowser
+
+    from .config import ConfigStore
+
+    cfg = ConfigStore().load()
+    webbrowser.open(f"http://127.0.0.1:{cfg.local_ui_port}")
+
+
 def _cmd_service(args: argparse.Namespace) -> None:
     if platform.system() != "Windows":
         print("O modo 'service' só está disponível no Windows.", file=sys.stderr)
@@ -171,6 +186,9 @@ def main() -> None:
         subparsers.add_parser(
             "selftest", help="Verificacao rapida (usada pelo instalador MSI)"
         ).set_defaults(func=_cmd_selftest)
+        subparsers.add_parser(
+            "open-ui", help="Abre a UI local de pareamento no navegador (usada pelos atalhos do instalador)"
+        ).set_defaults(func=_cmd_open_ui)
 
         service_parser = subparsers.add_parser("service", help="Gerencia o Windows Service")
         service_parser.add_argument("action", choices=["install", "start", "stop", "remove"])
