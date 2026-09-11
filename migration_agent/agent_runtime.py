@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -36,14 +37,31 @@ class AgentRuntime:
         self._peer_server = None
 
     def start_background(self) -> None:
+        # Issue #107: instrumentado com timestamps -- builds 11/14/19/20
+        # mostraram o SCM travando ~30-33s no start do servico (Error 1920)
+        # mesmo depois de eliminar o socket.getfqdn() do status_server
+        # (build 20), com o MESMO atraso de antes. Ou seja, tem outro ponto
+        # bloqueando por tempo parecido, ainda nao identificado. Em vez de
+        # seguir advinhando, cada etapa abaixo loga quanto tempo levou --
+        # o proximo teste real aponta exatamente qual linha e a culpada.
+        t0 = time.monotonic()
+
+        def _mark(label: str) -> None:
+            logger.info("start_background: %s (%.2fs desde o inicio)", label, time.monotonic() - t0)
+
         cfg = self.config_store.load()
+        _mark("config carregado")
 
         self._http_server = make_server(self.config_store, self.state, cfg.local_ui_port)
+        _mark("http_server criado (bind feito)")
         self._spawn(self._http_server.serve_forever, "status-server")
+        _mark("thread status-server iniciada")
         self.state.record(f"UI local disponível em http://127.0.0.1:{cfg.local_ui_port}")
 
         self._peer_server = make_peer_listener("0.0.0.0", cfg.peer_listener_port, self.pending_tokens)
+        _mark("peer_server criado (bind feito)")
         self._spawn(self._peer_server.serve_forever, "peer-listener")
+        _mark("thread peer-listener iniciada")
 
         # run_transfer no modo "receive_from_agent" precisa do PendingTokens
         # de verdade deste processo (o mesmo que o peer-listener acima usa)
@@ -51,6 +69,7 @@ class AgentRuntime:
         self.handlers = {**DEFAULT_HANDLERS, "run_transfer": make_run_transfer_handler(self.pending_tokens)}
 
         self._spawn(self._poll_loop, "poller")
+        _mark("thread poller iniciada -- start_background concluido")
 
     def start_foreground(self) -> None:
         self.start_background()

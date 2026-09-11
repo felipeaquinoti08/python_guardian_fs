@@ -16,6 +16,7 @@ configurado (ver `%ProgramData%\\GuardianMigrationAgent\\agent.log`).
 from __future__ import annotations
 
 import logging
+import time
 
 from .agent_runtime import AgentRuntime
 
@@ -60,18 +61,28 @@ class MigrationAgentService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.stop_event)
 
     def SvcDoRun(self):
+        # Issue #107: builds 11/14/19/20 mostraram o SCM travando ~30-33s
+        # aqui (Error 1920) mesmo apos eliminar o socket.getfqdn() do
+        # status_server (build 20) -- atraso identico, entao tem outro
+        # ponto lento ainda nao encontrado. Timestamps em cada etapa pra
+        # o proximo teste real apontar se o atraso e antes/depois de
+        # start_background() ou dentro dele (ver agent_runtime.py).
+        t0 = time.monotonic()
         try:
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
                 servicemanager.PYS_SERVICE_STARTED,
                 (self._svc_name_, ""),
             )
+            logger.info("SvcDoRun: LogMsg concluido (%.2fs)", time.monotonic() - t0)
             logger.info("SvcDoRun iniciado -- subindo threads de fundo (UI local, peer-listener, poller).")
             self.runtime.start_background()
+            logger.info("SvcDoRun: start_background() concluido (%.2fs desde o inicio)", time.monotonic() - t0)
             # Sem isto, o SCM fica esperando confirmacao de que o servico
             # subiu ate estourar o timeout padrao (~30s) e desistir --
             # mesmo com as threads de fundo ja rodando normalmente.
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            logger.info("SvcDoRun: ReportServiceStatus(RUNNING) concluido (%.2fs desde o inicio)", time.monotonic() - t0)
             logger.info("Threads de fundo no ar. Aguardando sinal de parada.")
             win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
         except Exception:
