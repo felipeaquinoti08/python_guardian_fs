@@ -78,8 +78,11 @@ jobs:
         # light.exe falha com LGHT0091 (Duplicate symbol) so por usar
         # UIRef Id="WixUI_Minimal", antes mesmo de qualquer diálogo
         # customizado nosso. 3.11.2 e a ultima versao 3.x sem esse
-        # regressao.
-        run: choco install wixtoolset --version=3.11.2 -y --no-progress
+        # regressao. O runner windows-latest ja vem com 3.14.x
+        # pre-instalado -- --allow-downgrade e necessario, senao o
+        # choco recusa a instalacao ("A newer version ... is already
+        # installed").
+        run: choco install wixtoolset --version=3.11.2 --allow-downgrade -y --no-progress
 
       - name: Baixar Visual C++ Redistributable (embutido no MSI)
         # Link permanente oficial da Microsoft (sempre aponta pra ultima
