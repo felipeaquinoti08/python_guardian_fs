@@ -24,11 +24,21 @@ refletir no outro.
     POST {base}/api/agents/{agent_id}/jobs/{job_id}/report
         header: Authorization: Bearer <auth_token>
         body: {"status": "progress"|"file_ok"|"file_error"|"done", "detail": {...}}
+
+    GET {base}/api/agents/{agent_id}/installer/version
+        header: Authorization: Bearer <auth_token>
+        200: {"available": bool, "version": str|None}
+
+    GET {base}/api/agents/{agent_id}/installer/download
+        header: Authorization: Bearer <auth_token>
+        200: bytes do .msi (streamed)
+        404: nenhum instalador publicado ainda
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -100,3 +110,28 @@ class GuardianClient:
             timeout=30,
         )
         resp.raise_for_status()
+
+    def get_latest_installer_version(self, agent_id: str, auth_token: str) -> Optional[str]:
+        resp = self.session.get(
+            f"{self.base_url}/api/agents/{agent_id}/installer/version",
+            headers=self._auth_headers(auth_token),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("version") if data.get("available") else None
+
+    def download_installer(self, agent_id: str, auth_token: str, dest_path: Path) -> None:
+        resp = self.session.get(
+            f"{self.base_url}/api/agents/{agent_id}/installer/download",
+            headers=self._auth_headers(auth_token),
+            timeout=120,
+            stream=True,
+        )
+        resp.raise_for_status()
+        tmp_path = dest_path.with_suffix(dest_path.suffix + ".part")
+        with open(tmp_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                if chunk:
+                    f.write(chunk)
+        tmp_path.replace(dest_path)

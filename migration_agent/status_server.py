@@ -24,11 +24,14 @@ import socketserver
 import time
 from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from typing import Optional
+from urllib.parse import parse_qs, urlencode, urlsplit
 
+from ._version import AGENT_VERSION
 from .api_client import GuardianClient, PairingError
 from .config import AgentConfig, ConfigStore, verify_password
 from .runtime_state import RuntimeState
+from .self_update import apply_update, check_for_update
 from .webassets import GUARDIAN_LOGO_PNG
 
 logger = logging.getLogger(__name__)
@@ -280,7 +283,40 @@ def _render_activity_table(entries) -> str:
     )
 
 
-def _render_main_page(config: AgentConfig, state: RuntimeState) -> str:
+def _render_update_section(query: dict) -> str:
+    status = (query.get("update_status") or [""])[0]
+    version = (query.get("update_version") or [""])[0]
+    error = (query.get("update_error") or [""])[0]
+
+    banner = ""
+    if status == "checking_error":
+        banner = f'<div class="alert alert-error">Não foi possível verificar atualizações: {html.escape(error)}</div>'
+    elif status == "up_to_date":
+        banner = '<div class="alert alert-success">Você já está na versão mais recente.</div>'
+    elif status == "available":
+        banner = (
+            f'<div class="alert alert-warning">Nova versão disponível: <b>{html.escape(version)}</b>.'
+            '<form method="post" action="/update/apply" style="margin-top:10px;">'
+            "<button type=\"submit\">Atualizar agora</button></form></div>"
+        )
+    elif status == "applying":
+        banner = (
+            '<div class="alert alert-success">Atualização iniciada! O serviço vai reiniciar sozinho em '
+            "instantes -- esta página pode ficar temporariamente indisponível durante a troca.</div>"
+        )
+    elif status == "apply_error":
+        banner = f'<div class="alert alert-error">Falha ao aplicar a atualização: {html.escape(error)}</div>'
+
+    return f"""
+    {banner}
+    <form method="post" action="/update/check">
+        <button type="submit" class="btn-secondary">Verificar atualização</button>
+    </form>
+    """
+
+
+def _render_main_page(config: AgentConfig, state: RuntimeState, query: Optional[dict] = None) -> str:
+    query = query or {}
     activity_html = _render_activity_table(list(reversed(state.recent())))
 
     top_links = '<div class="top-links"><a href="/change-password">Trocar senha</a><a href="/logout">Sair</a></div>'
@@ -294,7 +330,10 @@ def _render_main_page(config: AgentConfig, state: RuntimeState) -> str:
             <li><b>Cliente:</b> {html.escape(config.cliente_nome or '?')}</li>
             <li><b>Agent ID:</b> {html.escape(config.agent_id or '?')}</li>
             <li><b>Guardian:</b> {html.escape(config.guardian_base_url)}</li>
+            <li><b>Versão instalada:</b> {html.escape(AGENT_VERSION)}</li>
         </ul>
+        <h2>Atualização</h2>
+        {_render_update_section(query)}
         <h2>Atividade recente</h2>
         {activity_html}
         """
@@ -407,7 +446,8 @@ def make_handler(config_store: ConfigStore, state: RuntimeState):
             if not self._require_auth():
                 return
             cfg = config_store.load()
-            self._send_html(200, _render_main_page(cfg, state))
+            query = parse_qs(urlsplit(self.path).query)
+            self._send_html(200, _render_main_page(cfg, state, query=query))
 
         def do_POST(self):
             if self.path == "/login":
@@ -482,6 +522,46 @@ def make_handler(config_store: ConfigStore, state: RuntimeState):
                 state.record(f"Pareado com sucesso ao cliente {cfg.cliente_nome!r}")
 
                 self._redirect("/")
+                return
+
+            if self.path == "/update/check":
+                if not self._require_auth():
+                    return
+                cfg = config_store.load()
+                if not cfg.is_paired:
+                    self._redirect("/?" + urlencode({"update_status": "checking_error", "update_error": "Agent não pareado."}))
+                    return
+                try:
+                    client = GuardianClient(cfg.guardian_base_url)
+                    latest = check_for_update(client, cfg)
+                except Exception as exc:  # noqa: BLE001 -- qualquer falha de rede/HTTP vira aviso, nao 500
+                    self._redirect("/?" + urlencode({"update_status": "checking_error", "update_error": str(exc)}))
+                    return
+
+                if latest:
+                    state.record(f"Nova versão disponível: {latest}")
+                    self._redirect("/?" + urlencode({"update_status": "available", "update_version": latest}))
+                else:
+                    self._redirect("/?" + urlencode({"update_status": "up_to_date"}))
+                return
+
+            if self.path == "/update/apply":
+                if not self._require_auth():
+                    return
+                cfg = config_store.load()
+                if not cfg.is_paired:
+                    self._redirect("/?" + urlencode({"update_status": "apply_error", "update_error": "Agent não pareado."}))
+                    return
+                try:
+                    client = GuardianClient(cfg.guardian_base_url)
+                    apply_update(client, cfg)
+                except Exception as exc:  # noqa: BLE001 -- qualquer falha (rede, download, msiexec) vira aviso, nao 500
+                    state.record(f"Falha ao aplicar atualização: {exc}")
+                    self._redirect("/?" + urlencode({"update_status": "apply_error", "update_error": str(exc)}))
+                    return
+
+                state.record("Atualização disparada -- serviço vai reiniciar em instantes")
+                self._redirect("/?" + urlencode({"update_status": "applying"}))
                 return
 
             self._send_html(404, "not found")

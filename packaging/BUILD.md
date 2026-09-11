@@ -120,9 +120,18 @@ Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile
 $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
 heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -t packaging\heat_x64_transform.xsl -out packaging\internal_files.wxs
 
-candle.exe "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
+candle.exe "-dInternalSourceDir=$internalDir" "-dProductVersion=0.1.99.0" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
 light.exe -ext WixUIExtension -sice:ICE03 -sice:ICE38 -sice:ICE43 -sice:ICE57 packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
 ```
+
+`-dProductVersion` é opcional num build manual (sem ele, `installer.wxs`
+usa o placeholder `0.1.0.0` -- ver `<?ifndef ProductVersion?>` no topo do
+arquivo). No CI (`build-agent-msi.yml`) é sempre passado com um valor real
+que incrementa a cada run, necessário pra auto-atualização (issue #111)
+conseguir comparar "minha versão" com "versão mais nova publicada" --
+sem isso o `MajorUpgrade` do WiX também não reconheceria builds diferentes
+como upgrades de verdade (duas instalações com o mesmo `ProductVersion`
+não disparam upgrade).
 
 `-ext WixUIExtension` é necessário desde que o instalador ganhou um wizard
 (`WixUI_Minimal` + tela extra de atalhos, ver seção de atalhos abaixo),
@@ -143,12 +152,46 @@ WiX seta sozinho por causa do `InstallScope="perMachine"` do `Package`),
 ```powershell
 curl.exe --fail -X POST "https://SEU_GUARDIAN/api/agent-installer/publish" `
   -H "Authorization: Bearer SEU_AGENT_INSTALLER_PUBLISH_TOKEN" `
-  -F "installer=@dist/GuardianMigrationAgent.msi;filename=GuardianMigrationAgent.msi"
+  -F "installer=@dist/GuardianMigrationAgent.msi;filename=GuardianMigrationAgent.msi" `
+  -F "version=0.1.99.0"
 ```
+
+`version` é opcional (o publish funciona sem ele, só que aí nenhum agent
+já pareado vai conseguir descobrir que existe uma versão nova -- ver seção
+de auto-atualização abaixo). Precisa bater com o mesmo valor passado em
+`-dProductVersion` na hora de gerar o `.msi`.
 
 (O botão "Publicar instalador" que existia na tela de Agents foi removido
 a pedido do usuário -- o publish automático via CI cobre esse fluxo. O
 endpoint continua existindo como fallback manual, restrito a Super Admin.)
+
+## Auto-atualização (issue #111)
+
+A UI local do agent (tela principal, já pareado) mostra a versão
+instalada e um botão "Verificar atualização". Fluxo:
+
+1. `GET /api/agents/{id}/installer/version` (Bearer `auth_token`) --
+   compara a versão publicada mais recente no Guardian contra
+   `migration_agent/_version.py` embutido no `.exe` (ver
+   `self_update.py::check_for_update`).
+2. Se houver uma versão mais nova, aparece um botão "Atualizar agora".
+   Ao clicar, `POST /update/apply` baixa o `.msi`
+   (`GET /api/agents/{id}/installer/download`) pra uma pasta temporária e
+   dispara `msiexec /i ... /qn /norestart` como **processo destacado**
+   (`self_update.py::apply_update`) -- o próprio Windows Service que
+   está rodando nesse momento vai ser parado pelo `msiexec` como parte do
+   upgrade (mesmo `UpgradeCode` fixo, `MajorUpgrade` do WiX reconhece
+   como upgrade porque o `ProductVersion` é maior), e volta a subir
+   sozinho com a versão nova.
+3. O processo destacado sobrevive ao processo pai (o serviço) sendo
+   parado -- comportamento padrão do Windows pra processos filhos,
+   diferente de grupos de processo POSIX.
+
+**Nunca validado numa atualização real de máquina pra máquina** (só a
+lógica de comparação de versão e os endpoints têm cobertura de teste --
+ver `tests/test_self_update.py`, `tests/test_status_server.py`). A
+primeira atualização de verdade (de um build antigo pra um novo, na tela
+local do agent) é a validação real que falta.
 
 ## Atalhos opcionais (Menu Iniciar / Área de Trabalho)
 

@@ -35,6 +35,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Calcula versao do build
+        # Issue #111 (self-update): versao real, incrementando a cada
+        # build -- antes o ProductVersion do .msi ficava sempre fixo em
+        # "0.1.0.0", o que bloqueava o Agent de conseguir comparar "minha
+        # versao" com "versao mais nova disponivel". O mesmo valor vai
+        # pro .msi (candle.exe -dProductVersion), pro proprio codigo
+        # Python embutido (migration_agent/_version.py, pra UI local
+        # saber sua propria versao sem precisar consultar o MSI em
+        # runtime) e pro publish no Guardian (campo "version").
+        id: version
+        shell: pwsh
+        run: |
+          $version = "0.1.${{ github.run_number }}.0"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "AGENT_VERSION=$version" >> $env:GITHUB_ENV
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -64,6 +80,16 @@ jobs:
           } else {
             Write-Warning "pywin32_postinstall.py nao encontrado em $scriptsDir -- seguindo so com o bundling explicito no build_exe.spec"
           }
+
+      - name: Grava a versao no _version.py (embutida no .exe congelado)
+        # Sobrescreve o placeholder versionado no repo -- linha unica de
+        # proposito (sem docstring/heredoc), pra nao arriscar escaping
+        # errado do PowerShell quebrando a sintaxe do .py gerado (mesma
+        # licao da saga de bugs do installer.wxs nessa issue: quanto mais
+        # simples o texto gerado por script, menor o risco).
+        shell: pwsh
+        run: |
+          Set-Content -Path migration_agent\_version.py -Encoding utf8 -Value "AGENT_VERSION = `"$env:AGENT_VERSION`""
 
       - name: Build executável (PyInstaller)
         run: pyinstaller packaging\build_exe.spec
@@ -119,7 +145,7 @@ jobs:
         run: |
           $wixBin = Join-Path $env:WIX "bin"
           $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
-          & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
+          & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" "-dProductVersion=$env:AGENT_VERSION" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
           if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou" }
           & "$wixBin\light.exe" -ext WixUIExtension -sice:ICE03 -sice:ICE38 -sice:ICE43 -sice:ICE57 packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
           if ($LASTEXITCODE -ne 0) { throw "light.exe falhou" }
@@ -157,4 +183,5 @@ jobs:
         run: |
           curl.exe --fail -X POST "$env:GUARDIAN_BASE_URL/api/agent-installer/publish" `
             -H "Authorization: Bearer $env:PUBLISH_TOKEN" `
-            -F "installer=@dist/GuardianMigrationAgent.msi;filename=GuardianMigrationAgent.msi"
+            -F "installer=@dist/GuardianMigrationAgent.msi;filename=GuardianMigrationAgent.msi" `
+            -F "version=$env:AGENT_VERSION"

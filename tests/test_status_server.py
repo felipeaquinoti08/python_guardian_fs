@@ -249,3 +249,83 @@ def test_render_activity_table_empty_state():
     rendered = _render_activity_table([])
     assert "Nenhuma atividade ainda" in rendered
     assert "<table" not in rendered
+
+
+def _pair(store):
+    cfg = store.load()
+    cfg.guardian_base_url = "https://guardian.exemplo.com"
+    cfg.agent_id = "agent-9"
+    cfg.auth_token = "tok-9"
+    cfg.cliente_nome = "Cliente Fake"
+    store.save(cfg)
+    return cfg
+
+
+def test_update_check_shows_up_to_date_banner_when_no_newer_version(running_server, monkeypatch):
+    store, port = running_server
+    _pair(store)
+    monkeypatch.setattr(status_server_module, "check_for_update", lambda client, cfg: None)
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/update/check", data=b"", timeout=5).read().decode("utf-8")
+
+    assert "você já está na versão mais recente" in body.lower()
+
+
+def test_update_check_shows_available_banner_with_apply_button(running_server, monkeypatch):
+    store, port = running_server
+    _pair(store)
+    monkeypatch.setattr(status_server_module, "check_for_update", lambda client, cfg: "0.1.99.0")
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/update/check", data=b"", timeout=5).read().decode("utf-8")
+
+    assert "nova versão disponível" in body.lower()
+    assert "0.1.99.0" in body
+    assert 'action="/update/apply"' in body
+
+
+def test_update_check_shows_error_banner_on_network_failure(running_server, monkeypatch):
+    store, port = running_server
+    _pair(store)
+
+    def _boom(client, cfg):
+        raise Exception("Guardian inacessível: timeout")
+
+    monkeypatch.setattr(status_server_module, "check_for_update", _boom)
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/update/check", data=b"", timeout=5).read().decode("utf-8")
+
+    assert "não foi possível verificar atualizações" in body.lower()
+
+
+def test_update_apply_shows_applying_banner_and_records_activity(running_server, monkeypatch):
+    store, port = running_server
+    _pair(store)
+    calls = {}
+    monkeypatch.setattr(status_server_module, "apply_update", lambda client, cfg: calls.setdefault("called", True))
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/update/apply", data=b"", timeout=5).read().decode("utf-8")
+
+    assert calls.get("called") is True
+    assert "atualização iniciada" in body.lower()
+
+
+def test_update_apply_shows_error_banner_when_apply_fails(running_server, monkeypatch):
+    store, port = running_server
+    _pair(store)
+
+    def _boom(client, cfg):
+        raise Exception("msiexec não encontrado")
+
+    monkeypatch.setattr(status_server_module, "apply_update", _boom)
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/update/apply", data=b"", timeout=5).read().decode("utf-8")
+
+    assert "falha ao aplicar a atualização" in body.lower()
+    assert "msiexec não encontrado" in body
+
+

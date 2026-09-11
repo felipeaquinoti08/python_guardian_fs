@@ -12,12 +12,23 @@
   padrao e um erro real (LGHT0311) ja apareceu numa run de CI por causa de
   acentuacao numa dessas strings. Comentarios XML podem ter acento
   normalmente (nao viram string table do MSI).
+
+  ProductVersion: issue #111 (self-update) precisa de um numero que
+  incrementa a cada build. O CI passa -dProductVersion=0.1.<numero da
+  run>.0 pro candle.exe (o mesmo valor vai pro migration_agent/_version.py
+  do lado Python e pro campo "version" do publish no Guardian, os tres
+  precisam bater). O ifndef abaixo so existe pra builds manuais locais
+  (BUILD.md) sem passar -dProductVersion continuarem compilando, com um
+  valor placeholder.
 -->
+<?ifndef ProductVersion?>
+<?define ProductVersion = "0.1.0.0" ?>
+<?endif?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
            Name="Guardian Migration Agent"
            Language="1033"
-           Version="0.1.0.0"
+           Version="$(var.ProductVersion)"
            Manufacturer="Guardian Cloud"
            UpgradeCode="86454F58-AFCC-4C1E-BEC8-EAB061B132AF">
 
