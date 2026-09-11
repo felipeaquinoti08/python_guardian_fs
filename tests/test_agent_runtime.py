@@ -13,8 +13,11 @@ def test_start_background_serves_status_ui_and_stops_cleanly(tmp_path):
         last_error = None
         while time.monotonic() < deadline:
             try:
+                # /status.json agora exige login (issue #107) -- a pagina de
+                # login sem sessao ja e prova suficiente de que o servidor HTTP
+                # esta de pe.
                 body = urllib.request.urlopen(f"http://127.0.0.1:{cfg.local_ui_port}/status.json", timeout=1).read()
-                assert b"paired" in body
+                assert b"Entrar" in body
                 break
             except Exception as exc:  # servidor pode ainda não ter subido na primeira tentativa
                 last_error = exc

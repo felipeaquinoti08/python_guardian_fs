@@ -96,6 +96,26 @@ def test_main_open_ui_opens_browser_at_persisted_port(monkeypatch, tmp_path):
     assert opened["url"] == f"http://127.0.0.1:{port}"
 
 
+def test_main_reset_ui_password_prints_new_password(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("migration_agent.config.default_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["guardian-migration-agent.exe", "reset-ui-password"])
+
+    from migration_agent.config import ConfigStore, verify_password
+
+    old_password = ConfigStore(tmp_path).load().ui_default_password
+
+    main_module.main()
+
+    reloaded = ConfigStore(tmp_path).load()
+    assert reloaded.ui_password_is_default is True
+    assert reloaded.ui_default_password is not None
+    assert reloaded.ui_default_password != old_password
+    assert verify_password(reloaded.ui_default_password, reloaded.ui_password_hash)
+
+    captured = capsys.readouterr()
+    assert reloaded.ui_default_password in captured.out
+
+
 def test_main_emergency_logs_and_reraises_on_unhandled_exception(monkeypatch):
     """Issue #107: numa instalacao real o .exe crashou (custom action do
     MSI retornou codigo 1) mas C:\\ProgramData nunca chegou a ser criada --

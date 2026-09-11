@@ -1,3 +1,4 @@
+import http.cookiejar
 import json
 import threading
 import urllib.error
@@ -40,20 +41,81 @@ def running_server(tmp_path, monkeypatch):
         server.shutdown()
 
 
-def test_root_shows_pairing_form_when_not_paired(running_server):
+def _opener():
+    jar = http.cookiejar.CookieJar()
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar)), jar
+
+
+def _login(opener, port, username, password):
+    data = urlencode({"username": username, "password": password}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/login", data=data, method="POST")
+    return opener.open(req, timeout=5)
+
+
+def _authenticated_opener(store, port):
+    cfg = store.load()
+    opener, _jar = _opener()
+    _login(opener, port, cfg.ui_username, cfg.ui_default_password)
+    return opener
+
+
+def test_root_redirects_to_login_when_not_authenticated(running_server):
     _, port = running_server
-    body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+    opener, _jar = _opener()
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+    assert "entrar" in body.lower()
+    assert 'name="password"' in body
+
+
+def test_status_json_requires_authentication(running_server):
+    _, port = running_server
+    opener, _jar = _opener()
+    body = opener.open(f"http://127.0.0.1:{port}/status.json", timeout=5).read().decode("utf-8")
+    # sem sessao valida, /status.json tambem redireciona pro /login (nao vaza estado)
+    assert "entrar" in body.lower()
+
+
+def test_login_with_default_password_succeeds_and_shows_pairing_form(running_server):
+    store, port = running_server
+    opener = _authenticated_opener(store, port)
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
     assert "pareamento" in body.lower()
     assert "pairing_token" in body
 
 
+def test_login_with_wrong_password_returns_401(running_server):
+    store, port = running_server
+    cfg = store.load()
+    opener, _jar = _opener()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _login(opener, port, cfg.ui_username, "senha-errada")
+    assert exc_info.value.code == 401
+
+
+def test_default_password_banner_shown_until_password_changed(running_server):
+    store, port = running_server
+    opener = _authenticated_opener(store, port)
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+    assert "senha padrão ainda não foi trocada" in body.lower()
+
+
+def test_pair_endpoint_requires_authentication(running_server):
+    _, port = running_server
+    opener, _jar = _opener()
+    data = urlencode({"guardian_base_url": "https://guardian.exemplo.com", "pairing_token": "token-valido"}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/pair", data=data, method="POST")
+    body = opener.open(req, timeout=5).read().decode("utf-8")
+    assert "entrar" in body.lower()
+
+
 def test_pair_endpoint_persists_config_and_redirects(running_server):
     store, port = running_server
+    opener = _authenticated_opener(store, port)
     data = urlencode({"guardian_base_url": "https://guardian.exemplo.com", "pairing_token": "token-valido"}).encode()
 
     req = urllib.request.Request(f"http://127.0.0.1:{port}/pair", data=data, method="POST")
-    resp = urllib.request.urlopen(req, timeout=5)
-    assert resp.status == 200  # urllib já seguiu o redirect 303
+    resp = opener.open(req, timeout=5)
+    assert resp.status == 200  # opener já seguiu o redirect 303
 
     reloaded = store.load()
     assert reloaded.is_paired is True
@@ -63,12 +125,13 @@ def test_pair_endpoint_persists_config_and_redirects(running_server):
 
 
 def test_pair_endpoint_with_invalid_token_returns_400(running_server):
-    _, port = running_server
+    store, port = running_server
+    opener = _authenticated_opener(store, port)
     data = urlencode({"guardian_base_url": "https://guardian.exemplo.com", "pairing_token": "token-invalido"}).encode()
 
     req = urllib.request.Request(f"http://127.0.0.1:{port}/pair", data=data, method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc_info:
-        urllib.request.urlopen(req, timeout=5)
+        opener.open(req, timeout=5)
     assert exc_info.value.code == 400
 
 
@@ -80,7 +143,79 @@ def test_status_json_reflects_paired_state(running_server):
     cfg.cliente_nome = "Cliente Fake"
     store.save(cfg)
 
-    body = urllib.request.urlopen(f"http://127.0.0.1:{port}/status.json", timeout=5).read()
+    opener = _authenticated_opener(store, port)
+    body = opener.open(f"http://127.0.0.1:{port}/status.json", timeout=5).read()
     payload = json.loads(body)
     assert payload["paired"] is True
     assert payload["agent_id"] == "agent-9"
+
+
+def test_change_password_with_wrong_current_password_returns_400(running_server):
+    store, port = running_server
+    opener = _authenticated_opener(store, port)
+    data = urlencode(
+        {"current_password": "senha-errada", "new_password": "nova-senha-123", "new_password_confirm": "nova-senha-123"}
+    ).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/change-password", data=data, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(req, timeout=5)
+    assert exc_info.value.code == 400
+
+
+def test_change_password_with_mismatched_confirmation_returns_400(running_server):
+    store, port = running_server
+    cfg = store.load()
+    opener = _authenticated_opener(store, port)
+    data = urlencode(
+        {
+            "current_password": cfg.ui_default_password,
+            "new_password": "nova-senha-123",
+            "new_password_confirm": "outra-coisa",
+        }
+    ).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/change-password", data=data, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(req, timeout=5)
+    assert exc_info.value.code == 400
+
+
+def test_change_password_succeeds_and_old_password_stops_working(running_server):
+    store, port = running_server
+    cfg = store.load()
+    opener = _authenticated_opener(store, port)
+    data = urlencode(
+        {
+            "current_password": cfg.ui_default_password,
+            "new_password": "nova-senha-123",
+            "new_password_confirm": "nova-senha-123",
+        }
+    ).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/change-password", data=data, method="POST")
+    resp = opener.open(req, timeout=5)
+    assert resp.status == 200  # seguiu o redirect ate /login
+
+    reloaded = store.load()
+    assert reloaded.ui_password_is_default is False
+    assert reloaded.ui_default_password is None
+
+    # sessao anterior foi invalidada pela troca de senha
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+    assert "entrar" in body.lower()
+
+    # senha antiga nao funciona mais, a nova sim
+    fresh_opener, _jar = _opener()
+    with pytest.raises(urllib.error.HTTPError):
+        _login(fresh_opener, port, cfg.ui_username, cfg.ui_default_password)
+
+    fresh_opener2, _jar2 = _opener()
+    resp2 = _login(fresh_opener2, port, cfg.ui_username, "nova-senha-123")
+    assert resp2.status == 200
+
+
+def test_logout_invalidates_session(running_server):
+    store, port = running_server
+    opener = _authenticated_opener(store, port)
+    opener.open(f"http://127.0.0.1:{port}/logout", timeout=5)
+
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+    assert "entrar" in body.lower()

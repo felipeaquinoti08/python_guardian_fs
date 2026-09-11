@@ -8,15 +8,25 @@ Guardian, id do agent, portas locais escolhidas).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import platform
 import secrets
+import string
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from .crypto_store import get_secret_store
+
+logger = logging.getLogger(__name__)
+
+_PBKDF2_ITERATIONS = 260_000
+_DEFAULT_PASSWORD_ALPHABET = "".join(
+    c for c in (string.ascii_uppercase + string.ascii_lowercase + string.digits) if c not in "0O1lI"
+)
 
 
 def default_state_dir() -> Path:
@@ -34,6 +44,32 @@ def _pick_free_port() -> int:
         return s.getsockname()[1]
 
 
+def generate_default_password(length: int = 12) -> str:
+    """Senha inicial da UI local (issue #107): alfabeto sem caracteres
+    ambíguos (0/O, 1/l/I) pra facilitar digitar num teclado real."""
+    return "".join(secrets.choice(_DEFAULT_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def hash_password(password: str, salt: Optional[bytes] = None) -> str:
+    salt = salt or os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, iterations_str, salt_hex, digest_hex = stored_hash.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = bytes.fromhex(salt_hex)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations_str))
+        return secrets.compare_digest(digest.hex(), digest_hex)
+    except (ValueError, AttributeError):
+        return False
+
+
 @dataclass
 class AgentConfig:
     guardian_base_url: str = ""
@@ -43,6 +79,14 @@ class AgentConfig:
     local_ui_port: int = field(default_factory=_pick_free_port)
     peer_listener_port: int = field(default_factory=_pick_free_port)
     peer_listener_ip: Optional[str] = None
+    ui_username: str = "admin"
+    ui_password_hash: str = ""
+    ui_password_is_default: bool = True
+    # Só preenchido enquanto a senha ainda é a gerada automaticamente (pra
+    # poder mostrar na tela de login sem precisar de um fluxo de "esqueci
+    # minha senha" -- ver status_server.py). Nunca fica em texto puro no
+    # disco (mesmo tratamento do auth_token).
+    ui_default_password: Optional[str] = None
 
     @property
     def is_paired(self) -> bool:
@@ -59,14 +103,27 @@ class ConfigStore:
     def load(self) -> AgentConfig:
         if not self.config_path.exists():
             cfg = AgentConfig()
+            password = generate_default_password()
+            cfg.ui_password_hash = hash_password(password)
+            cfg.ui_default_password = password
+            cfg.ui_password_is_default = True
             self.save(cfg)
+            logger.info(
+                "Senha padrao da UI local gerada (usuario %r). Troque em /change-password assim que possivel.",
+                cfg.ui_username,
+            )
             return cfg
 
         raw = json.loads(self.config_path.read_text("utf-8"))
         encrypted_token = raw.pop("auth_token_encrypted", None)
+        encrypted_default_password = raw.pop("ui_default_password_encrypted", None)
         cfg = AgentConfig(**raw)
         if encrypted_token:
             cfg.auth_token = self._secret_store.decrypt(bytes.fromhex(encrypted_token)).decode("utf-8")
+        if encrypted_default_password:
+            cfg.ui_default_password = self._secret_store.decrypt(bytes.fromhex(encrypted_default_password)).decode(
+                "utf-8"
+            )
         return cfg
 
     def save(self, cfg: AgentConfig) -> None:
@@ -74,11 +131,30 @@ class ConfigStore:
         auth_token = data.pop("auth_token", None)
         if auth_token:
             data["auth_token_encrypted"] = self._secret_store.encrypt(auth_token.encode("utf-8")).hex()
+        default_password = data.pop("ui_default_password", None)
+        if default_password:
+            data["ui_default_password_encrypted"] = self._secret_store.encrypt(default_password.encode("utf-8")).hex()
         tmp_path = self.config_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(data, indent=2), "utf-8")
         tmp_path.replace(self.config_path)
 
-    @staticmethod
-    def new_local_ui_secret() -> str:
-        """Token curto pra proteger a UI local (ver status_server.py)."""
-        return secrets.token_urlsafe(24)
+    def reset_ui_password(self) -> str:
+        """Gera e persiste uma nova senha padrao pra UI local (CLI
+        `reset-ui-password`, issue #107) -- util se o usuario esquecer a
+        senha atual: quem roda esse comando ja tem acesso local a maquina
+        (mesmo nivel de confianca de quem conseguiria ler o config.json
+        direto), entao nao precisa de um fluxo de recuperacao por e-mail."""
+        password = generate_default_password()
+        cfg = self.load()
+        cfg.ui_password_hash = hash_password(password)
+        cfg.ui_default_password = password
+        cfg.ui_password_is_default = True
+        self.save(cfg)
+        return password
+
+    def change_ui_password(self, new_password: str) -> None:
+        cfg = self.load()
+        cfg.ui_password_hash = hash_password(new_password)
+        cfg.ui_default_password = None
+        cfg.ui_password_is_default = False
+        self.save(cfg)

@@ -100,6 +100,21 @@ def _cmd_open_ui(_args: argparse.Namespace) -> None:
     webbrowser.open(f"http://127.0.0.1:{cfg.local_ui_port}")
 
 
+def _cmd_reset_ui_password(_args: argparse.Namespace) -> None:
+    """Gera uma nova senha padrao pra UI local e imprime no console
+    (issue #107) -- unico jeito de recuperar acesso se a senha for
+    esquecida, ja que nao ha fluxo de recuperacao por e-mail: quem roda
+    esse comando ja tem acesso local a maquina (mesmo nivel de confianca
+    de quem conseguiria ler o config.json direto)."""
+    from .config import ConfigStore
+
+    store = ConfigStore()
+    cfg = store.load()
+    password = store.reset_ui_password()
+    print(f"Nova senha da UI local gerada. Usuario: {cfg.ui_username}  Senha: {password}")
+    print("Troque assim que possivel em /change-password (fica marcada como padrao ate la).")
+
+
 def _cmd_service(args: argparse.Namespace) -> None:
     if platform.system() != "Windows":
         print("O modo 'service' só está disponível no Windows.", file=sys.stderr)
@@ -189,6 +204,9 @@ def main() -> None:
         subparsers.add_parser(
             "open-ui", help="Abre a UI local de pareamento no navegador (usada pelos atalhos do instalador)"
         ).set_defaults(func=_cmd_open_ui)
+        subparsers.add_parser(
+            "reset-ui-password", help="Gera uma nova senha padrao pra UI local (recuperacao de acesso)"
+        ).set_defaults(func=_cmd_reset_ui_password)
 
         service_parser = subparsers.add_parser("service", help="Gerencia o Windows Service")
         service_parser.add_argument("action", choices=["install", "start", "stop", "remove"])
