@@ -83,7 +83,7 @@ class AgentPoller:
         if command is None:
             return  # nada pendente, o próprio long-poll já segurou o tempo de espera
 
-        self.on_activity(f"Comando recebido: {command.type} ({command.command_id})")
+        self.on_activity(f"Comando recebido: {self._describe_command(command)}")
 
         if command.type in BACKGROUND_COMMAND_TYPES:
             threading.Thread(
@@ -92,6 +92,32 @@ class AgentPoller:
             return
 
         self._execute_and_report(command)
+
+    def _describe_command(self, command) -> str:
+        """Descrição amigável do comando pra UI local/histórico -- issue
+        #114: o command_id (UUID interno do Guardian) não diz nada pra
+        quem está lendo a tela, o caminho do arquivo/pasta envolvido sim."""
+        payload = command.payload or {}
+
+        if command.type == "run_transfer":
+            mode = payload.get("mode")
+            if mode == "upload_to_cloud":
+                return f"run_transfer, enviando \"{payload.get('source_path', '?')}\" para a nuvem"
+            if mode == "download_from_cloud":
+                return f"run_transfer, baixando da nuvem para \"{payload.get('dest_path', '?')}\""
+            if mode == "push_to_agent":
+                return f"run_transfer, enviando \"{payload.get('source_path', '?')}\" para outro agent"
+            if mode == "receive_from_agent":
+                return f"run_transfer, recebendo de outro agent em \"{payload.get('dest_root', '?')}\""
+            return "run_transfer"
+
+        if command.type in ("list_folder", "create_folder"):
+            return f"{command.type} (\"{payload.get('path', '?')}\")"
+
+        if command.type == "connectivity_check":
+            return f"connectivity_check ({payload.get('ip', '?')}:{payload.get('port', '?')})"
+
+        return command.type
 
     def _peer_label_for(self, command) -> Optional[str]:
         if command.type != "run_transfer":
@@ -103,13 +129,14 @@ class AgentPoller:
         return f"Enviando arquivo para outro agent ({dest_ip}:{dest_port})"
 
     def _execute_and_report(self, command) -> None:
+        description = self._describe_command(command)
         peer_label = self._peer_label_for(command)
         if peer_label:
             self.on_peer_status(peer_label)
         try:
             result = dispatch(command.type, command.payload, self.handlers)
             self.client.send_command_result(self.config.agent_id, self.config.auth_token, command.command_id, ok=True, result=result)
-            self.on_activity(f"Comando {command.command_id} concluído")
+            self.on_activity(f"Comando concluído: {description}")
         except UnknownCommandError as exc:
             logger.error("Comando desconhecido: %s", exc)
             self.client.send_command_result(
@@ -117,7 +144,7 @@ class AgentPoller:
             )
         except Exception as exc:  # noqa: BLE001 - qualquer falha do handler vira "erro" reportado, nunca derruba o loop/thread
             logger.exception("Falha executando comando %s", command.type)
-            self.on_activity(f"Comando {command.command_id} falhou: {exc}")
+            self.on_activity(f"Comando falhou: {description} -- {exc}")
             try:
                 self.client.send_command_result(
                     self.config.agent_id, self.config.auth_token, command.command_id, ok=False, error=str(exc)

@@ -2,6 +2,8 @@ import threading
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from migration_agent.api_client import AgentCommand
 from migration_agent.config import AgentConfig
 from migration_agent.poller import AgentPoller
@@ -189,3 +191,62 @@ def test_run_transfer_runs_in_background_without_blocking_the_loop():
     time.sleep(0.2)
     ok_calls = [c for c in client.send_command_result.call_args_list if c.args[2] == "cmd-slow"]
     assert len(ok_calls) == 1 and ok_calls[0].kwargs["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "command,expected_fragment",
+    [
+        (
+            AgentCommand(command_id="c1", type="run_transfer", payload={"mode": "upload_to_cloud", "source_path": "C:\\dados\\a.txt"}),
+            'enviando "C:\\dados\\a.txt" para a nuvem',
+        ),
+        (
+            AgentCommand(command_id="c2", type="run_transfer", payload={"mode": "download_from_cloud", "dest_path": "C:\\dados\\b.txt"}),
+            'baixando da nuvem para "C:\\dados\\b.txt"',
+        ),
+        (
+            AgentCommand(command_id="c3", type="run_transfer", payload={"mode": "push_to_agent", "source_path": "C:\\dados\\c.txt"}),
+            'enviando "C:\\dados\\c.txt" para outro agent',
+        ),
+        (
+            AgentCommand(command_id="c4", type="run_transfer", payload={"mode": "receive_from_agent", "dest_root": "C:\\dados"}),
+            'recebendo de outro agent em "C:\\dados"',
+        ),
+        (
+            AgentCommand(command_id="c5", type="run_transfer", payload={}),
+            "run_transfer",
+        ),
+        (
+            AgentCommand(command_id="c6", type="list_folder", payload={"path": "C:\\dados"}),
+            'list_folder ("C:\\dados")',
+        ),
+        (
+            AgentCommand(command_id="c7", type="create_folder", payload={"path": "C:\\dados\\nova"}),
+            'create_folder ("C:\\dados\\nova")',
+        ),
+        (
+            AgentCommand(command_id="c8", type="connectivity_check", payload={"ip": "10.0.0.5", "port": 5555}),
+            "connectivity_check (10.0.0.5:5555)",
+        ),
+    ],
+)
+def test_describe_command_shows_path_not_id(command, expected_fragment):
+    poller = AgentPoller(_paired_config(), client=MagicMock())
+    description = poller._describe_command(command)
+
+    assert expected_fragment in description
+    assert command.command_id not in description
+
+
+def test_activity_messages_never_expose_the_raw_command_id():
+    client = MagicMock()
+    command = AgentCommand(command_id="56bebf98-13d7-427a-9bc0-7644b1597cd5", type="run_transfer", payload={"mode": "push_to_agent", "source_path": "C:\\dados\\x.txt"})
+    client.long_poll.return_value = command
+
+    messages = []
+    poller = AgentPoller(_paired_config(), client=client, on_activity=messages.append, handlers={"run_transfer": lambda payload: {"ok": True}})
+
+    poller._run_one_cycle()
+
+    assert all(command.command_id not in m for m in messages)
+    assert any("C:\\dados\\x.txt" in m for m in messages)
