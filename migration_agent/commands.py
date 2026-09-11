@@ -18,7 +18,9 @@ from typing import Callable, Optional
 
 from .peer_listener import PendingTokens
 from .transfer import (
+    ProgressCallback,
     TransferError,
+    _noop_progress,
     download_from_cloud,
     push_file_to_peer,
     upload_to_cloud,
@@ -161,13 +163,13 @@ def _with_unc_credentials(path: str, username: Optional[str], password: Optional
     return _Ctx()
 
 
-def _run_upload_to_cloud(payload: dict) -> dict:
+def _run_upload_to_cloud(payload: dict, on_progress: Optional[ProgressCallback] = None) -> dict:
     """Agent é ORIGEM, nuvem é destino. Sobe direto pro provedor cloud
     usando a credencial de curta duração que o Guardian gerou -- os bytes
     nunca passam pelo Guardian.
 
     payload: {"source_path", "username", "password", "upload_credential",
-              "max_bandwidth_mbps", "delete_source"}
+              "max_bandwidth_mbps", "delete_source", "job_id"}
     """
     source_path = payload["source_path"]
     with _with_unc_credentials(source_path, payload.get("username"), payload.get("password")):
@@ -175,18 +177,19 @@ def _run_upload_to_cloud(payload: dict) -> dict:
             Path(source_path),
             payload["upload_credential"],
             max_bandwidth_mbps=payload.get("max_bandwidth_mbps"),
+            on_progress=on_progress or _noop_progress,
         )
         if payload.get("delete_source"):
             os.remove(source_path)
         return result
 
 
-def _run_download_from_cloud(payload: dict) -> dict:
+def _run_download_from_cloud(payload: dict, on_progress: Optional[ProgressCallback] = None) -> dict:
     """Nuvem é origem, agent é DESTINO. Baixa direto do provedor cloud
     usando o link temporário que o Guardian gerou.
 
     payload: {"download_url", "dest_path", "username", "password",
-              "expected_size", "max_bandwidth_mbps"}
+              "expected_size", "max_bandwidth_mbps", "job_id"}
     """
     dest_path = payload["dest_path"]
     with _with_unc_credentials(dest_path, payload.get("username"), payload.get("password")):
@@ -198,10 +201,11 @@ def _run_download_from_cloud(payload: dict) -> dict:
             Path(dest_path),
             max_bandwidth_mbps=payload.get("max_bandwidth_mbps"),
             expected_size=payload.get("expected_size"),
+            on_progress=on_progress or _noop_progress,
         )
 
 
-def _run_push_to_agent(payload: dict) -> dict:
+def _run_push_to_agent(payload: dict, on_progress: Optional[ProgressCallback] = None) -> dict:
     """Agent é ORIGEM, outro agent é DESTINO -- conexão direta (protocolo
     de peer_listener.py, issue #105), Guardian nunca vê os bytes.
 
@@ -219,51 +223,65 @@ def _run_push_to_agent(payload: dict) -> dict:
             payload["token"],
             payload["relative_path"],
             max_bandwidth_mbps=payload.get("max_bandwidth_mbps"),
+            on_progress=on_progress or _noop_progress,
         )
         if payload.get("delete_source"):
             os.remove(source_path)
         return result
 
 
-def _run_receive_from_agent(payload: dict, pending_tokens: Optional[PendingTokens]) -> dict:
+def _run_receive_from_agent(
+    payload: dict, pending_tokens: Optional[PendingTokens], on_progress: Optional[ProgressCallback] = None
+) -> dict:
     """Agent é DESTINO de uma transferência agent<->agent -- só registra a
     expectativa no listener (`peer_listener.py`) já rodando em background;
     o recebimento de fato acontece de forma assíncrona quando a origem
-    conectar. Retorna na hora, não espera o arquivo chegar.
+    conectar. Retorna na hora, não espera o arquivo chegar -- por isso
+    `on_progress` (issue #115) é guardado junto da expectativa
+    (`PendingTokens.expect`), não chamado aqui: quem sabe o progresso de
+    verdade é `peer_listener.py::_receive_file`, quando a conexão chegar.
 
     payload: {"job_id", "token", "dest_root"}
     """
     if pending_tokens is None:
         raise RuntimeError("Este agent não tem o listener de peer inicializado (pending_tokens ausente).")
 
-    pending_tokens.expect(payload["job_id"], payload["token"], Path(payload["dest_root"]))
+    pending_tokens.expect(payload["job_id"], payload["token"], Path(payload["dest_root"]), on_progress=on_progress)
     return {"expecting": True}
 
 
-def handle_run_transfer(payload: dict, pending_tokens: Optional[PendingTokens] = None) -> dict:
+def handle_run_transfer(
+    payload: dict, pending_tokens: Optional[PendingTokens] = None, on_progress: Optional[ProgressCallback] = None
+) -> dict:
     mode = payload.get("mode")
     try:
         if mode == "upload_to_cloud":
-            return _run_upload_to_cloud(payload)
+            return _run_upload_to_cloud(payload, on_progress)
         if mode == "download_from_cloud":
-            return _run_download_from_cloud(payload)
+            return _run_download_from_cloud(payload, on_progress)
         if mode == "push_to_agent":
-            return _run_push_to_agent(payload)
+            return _run_push_to_agent(payload, on_progress)
         if mode == "receive_from_agent":
-            return _run_receive_from_agent(payload, pending_tokens)
+            return _run_receive_from_agent(payload, pending_tokens, on_progress)
     except TransferError as exc:
         raise RuntimeError(str(exc)) from exc
 
     raise ValueError(f"Modo de run_transfer desconhecido: {mode!r}")
 
 
-def make_run_transfer_handler(pending_tokens: Optional[PendingTokens]) -> CommandHandler:
+def make_run_transfer_handler(pending_tokens: Optional[PendingTokens]):
     """Factory -- liga o handler ao `PendingTokens` de verdade do processo
     (só existe em tempo de execução, via `AgentRuntime`). Ver `agent_runtime.py`.
+
+    Assinatura de 2 parâmetros (`payload`, `on_progress` opcional) de
+    propósito -- não é um `CommandHandler` comum (issue #115): o poller
+    reconhece esse caso especial só pra `run_transfer` e monta um
+    `on_progress` com throttle próprio antes de despachar (ver
+    poller.py::_execute_and_report).
     """
 
-    def _handler(payload: dict) -> dict:
-        return handle_run_transfer(payload, pending_tokens)
+    def _handler(payload: dict, on_progress: Optional[ProgressCallback] = None) -> dict:
+        return handle_run_transfer(payload, pending_tokens, on_progress)
 
     return _handler
 

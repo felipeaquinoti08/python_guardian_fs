@@ -52,7 +52,7 @@ def test_push_to_agent_reports_peer_status_during_transfer_and_clears_after():
     transfer_started = threading.Event()
     transfer_may_finish = threading.Event()
 
-    def slow_push_handler(payload):
+    def slow_push_handler(payload, on_progress=None):
         transfer_started.set()
         transfer_may_finish.wait(timeout=5)
         return {"done": True}
@@ -165,7 +165,7 @@ def test_run_transfer_runs_in_background_without_blocking_the_loop():
     handler_started = threading.Event()
     handler_may_finish = threading.Event()
 
-    def slow_handler(payload):
+    def slow_handler(payload, on_progress=None):
         handler_started.set()
         handler_may_finish.wait(timeout=5)
         return {"done": True}
@@ -244,9 +244,68 @@ def test_activity_messages_never_expose_the_raw_command_id():
     client.long_poll.return_value = command
 
     messages = []
-    poller = AgentPoller(_paired_config(), client=client, on_activity=messages.append, handlers={"run_transfer": lambda payload: {"ok": True}})
+    poller = AgentPoller(_paired_config(), client=client, on_activity=messages.append, handlers={"run_transfer": lambda payload, on_progress=None: {"ok": True}})
 
     poller._run_one_cycle()
 
     assert all(command.command_id not in m for m in messages)
     assert any("C:\\dados\\x.txt" in m for m in messages)
+
+
+def test_run_transfer_handler_receives_progress_callback(monkeypatch):
+    """O poller deve envolver o handler run_transfer com um on_progress --
+    issue #115."""
+    monkeypatch.setattr("migration_agent.poller.PROGRESS_REPORT_MIN_INTERVAL_SECONDS", 0)
+    client = MagicMock()
+    command = AgentCommand(command_id="c1", type="run_transfer", payload={"mode": "push_to_agent", "job_id": "job-42"})
+    client.long_poll.return_value = command
+
+    received_callback = {}
+
+    def handler(payload, on_progress=None):
+        received_callback["callback"] = on_progress
+        on_progress(50, 100)
+        return {"ok": True}
+
+    poller = AgentPoller(_paired_config(), client=client, handlers={"run_transfer": handler})
+    poller._run_one_cycle()
+
+    assert received_callback["callback"] is not None
+    client.report_job.assert_called_once_with("agent-1", "tok", "job-42", "progress", {"bytes_done": 50, "bytes_total": 100})
+
+
+def test_progress_reporter_throttles_intermediate_reports_but_always_sends_final():
+    client = MagicMock()
+    command = AgentCommand(command_id="c1", type="run_transfer", payload={"mode": "push_to_agent", "job_id": "job-42"})
+    poller = AgentPoller(_paired_config(), client=client)
+
+    reporter = poller._make_progress_reporter(command)
+    reporter(10, 100)  # primeira chamada -- ainda dentro do intervalo de throttle
+    reporter(20, 100)  # deveria ser suprimida (throttle)
+    reporter(100, 100)  # final -- sempre reporta, mesmo dentro do intervalo
+
+    calls = [c.args[4] for c in client.report_job.call_args_list]
+    assert {"bytes_done": 10, "bytes_total": 100} in calls
+    assert {"bytes_done": 20, "bytes_total": 100} not in calls
+    assert {"bytes_done": 100, "bytes_total": 100} in calls
+
+
+def test_progress_reporter_is_noop_without_job_id():
+    client = MagicMock()
+    command = AgentCommand(command_id="c1", type="run_transfer", payload={"mode": "push_to_agent"})  # sem job_id
+    poller = AgentPoller(_paired_config(), client=client)
+
+    reporter = poller._make_progress_reporter(command)
+    reporter(50, 100)
+
+    client.report_job.assert_not_called()
+
+
+def test_progress_reporter_swallows_report_failures():
+    client = MagicMock()
+    client.report_job.side_effect = Exception("Guardian inacessível")
+    command = AgentCommand(command_id="c1", type="run_transfer", payload={"mode": "push_to_agent", "job_id": "job-42"})
+    poller = AgentPoller(_paired_config(), client=client)
+
+    reporter = poller._make_progress_reporter(command)
+    reporter(100, 100)  # nao deve levantar, so logar em debug

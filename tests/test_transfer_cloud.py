@@ -181,3 +181,81 @@ def test_download_from_cloud_size_mismatch_raises_and_cleans_temp(tmp_path, capt
 
     assert not dest.exists()
     assert not dest.with_name(dest.name + ".part").exists()
+
+
+def test_upload_graph_session_reports_progress(tmp_path, capturing_server):
+    server, port, handler = capturing_server
+    handler.status_code = 200
+    import migration_agent.transfer as transfer_mod
+
+    original_chunk = transfer_mod._GRAPH_CHUNK_SIZE
+    transfer_mod._GRAPH_CHUNK_SIZE = 100
+    progress_calls = []
+    try:
+        source = tmp_path / "arquivo.bin"
+        source.write_bytes(b"a" * 256)
+        upload_to_cloud(
+            source,
+            {"type": "graph_upload_session", "uploadUrl": f"http://127.0.0.1:{port}/upload"},
+            on_progress=lambda done, total: progress_calls.append((done, total)),
+        )
+    finally:
+        transfer_mod._GRAPH_CHUNK_SIZE = original_chunk
+
+    assert progress_calls[0] == (0, 256)
+    assert progress_calls[-1] == (256, 256)
+    assert all(total == 256 for _done, total in progress_calls)
+
+
+def test_upload_via_put_reports_progress(tmp_path, capturing_server):
+    server, port, handler = capturing_server
+    handler.status_code = 201
+    progress_calls = []
+
+    source = tmp_path / "arquivo.bin"
+    source.write_bytes(b"x" * 5000)
+    upload_to_cloud(
+        source,
+        {"type": "s3_presigned_put", "url": f"http://127.0.0.1:{port}/bucket/key"},
+        on_progress=lambda done, total: progress_calls.append((done, total)),
+    )
+
+    assert progress_calls[-1] == (5000, 5000)
+    assert all(total == 5000 for _done, total in progress_calls)
+
+
+def test_download_from_cloud_reports_progress(tmp_path, capturing_server):
+    server, port, handler = capturing_server
+    content = b"conteudo" * 1000
+    handler.get_body = content
+    progress_calls = []
+
+    dest = tmp_path / "baixado.bin"
+    download_from_cloud(
+        f"http://127.0.0.1:{port}/download",
+        dest,
+        expected_size=len(content),
+        on_progress=lambda done, total: progress_calls.append((done, total)),
+    )
+
+    assert progress_calls[0] == (0, len(content))
+    assert progress_calls[-1] == (len(content), len(content))
+
+
+def test_download_from_cloud_progress_defaults_to_done_when_size_unknown(tmp_path, capturing_server):
+    server, port, handler = capturing_server
+    content = b"conteudo sem tamanho esperado"
+    handler.get_body = content
+    progress_calls = []
+
+    dest = tmp_path / "baixado.bin"
+    download_from_cloud(
+        f"http://127.0.0.1:{port}/download",
+        dest,
+        on_progress=lambda done, total: progress_calls.append((done, total)),
+    )
+
+    # sem expected_size e sem Content-Length no response de teste -- o total
+    # fica igual ao "done" de cada chamada (melhor do que None/0 pra quem
+    # calcula porcentagem, embora nesse caso a % sempre feche em 100%)
+    assert progress_calls[-1][0] == progress_calls[-1][1] == len(content)

@@ -158,3 +158,71 @@ def test_bandwidth_limit_does_not_break_correctness(tmp_path):
         assert (dest_root / "arquivo.bin").stat().st_size == 200 * 1024
     finally:
         server.shutdown()
+
+
+def test_push_to_agent_reports_progress_on_sender_side(tmp_path):
+    server, pending, port = _start_listener(tmp_path)
+    try:
+        dest_root = tmp_path / "dest_share"
+        dest_root.mkdir()
+        source_file = tmp_path / "arquivo.bin"
+        source_file.write_bytes(b"x" * (500 * 1024))
+
+        handle_run_transfer({
+            "mode": "receive_from_agent", "job_id": "job-p1", "token": "tok-p1", "dest_root": str(dest_root),
+        }, pending_tokens=pending)
+
+        progress_calls = []
+        handle_run_transfer(
+            {
+                "mode": "push_to_agent",
+                "source_path": str(source_file),
+                "dest_ip": "127.0.0.1",
+                "dest_port": port,
+                "job_id": "job-p1",
+                "token": "tok-p1",
+                "relative_path": "arquivo.bin",
+            },
+            on_progress=lambda done, total: progress_calls.append((done, total)),
+        )
+
+        assert progress_calls[0] == (0, 500 * 1024)
+        assert progress_calls[-1] == (500 * 1024, 500 * 1024)
+    finally:
+        server.shutdown()
+
+
+def test_receive_from_agent_reports_progress_on_receiver_side(tmp_path):
+    """O lado que recebe só sabe o progresso de verdade quando a conexão
+    chega -- on_progress passado em receive_from_agent fica guardado em
+    PendingTokens e só é chamado dentro de peer_listener.py, bem depois
+    de handle_run_transfer(mode=receive_from_agent) já ter retornado."""
+    server, pending, port = _start_listener(tmp_path)
+    try:
+        dest_root = tmp_path / "dest_share"
+        dest_root.mkdir()
+        source_file = tmp_path / "arquivo.bin"
+        source_file.write_bytes(b"y" * (500 * 1024))
+
+        progress_calls = []
+        handle_run_transfer(
+            {"mode": "receive_from_agent", "job_id": "job-p2", "token": "tok-p2", "dest_root": str(dest_root)},
+            pending_tokens=pending,
+            on_progress=lambda done, total: progress_calls.append((done, total)),
+        )
+        assert progress_calls == []  # nada ainda -- so registrou a expectativa
+
+        handle_run_transfer({
+            "mode": "push_to_agent",
+            "source_path": str(source_file),
+            "dest_ip": "127.0.0.1",
+            "dest_port": port,
+            "job_id": "job-p2",
+            "token": "tok-p2",
+            "relative_path": "arquivo.bin",
+        })
+
+        assert progress_calls[0] == (0, 500 * 1024)
+        assert progress_calls[-1] == (500 * 1024, 500 * 1024)
+    finally:
+        server.shutdown()

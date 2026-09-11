@@ -32,6 +32,13 @@ MAX_BACKOFF_SECONDS = 60
 # por agent), não aqui.
 BACKGROUND_COMMAND_TYPES = {"run_transfer"}
 
+# Issue #115: intervalo mínimo entre reports de progresso pro Guardian --
+# `on_progress` (transfer.py) é chamado a cada chunk (64KB), o que viraria
+# milhares de chamadas HTTP numa transferência de 600MB sem esse throttle.
+# Sempre reporta a última chamada (100% de verdade), mesmo dentro do
+# intervalo.
+PROGRESS_REPORT_MIN_INTERVAL_SECONDS = 2.0
+
 
 class AgentPoller:
     def __init__(
@@ -128,13 +135,55 @@ class AgentPoller:
         dest_port = command.payload.get("dest_port", "?")
         return f"Enviando arquivo para outro agent ({dest_ip}:{dest_port})"
 
+    def _make_progress_reporter(self, command) -> Callable[[int, int], None]:
+        """Issue #115: reporta progresso (bytes_done/bytes_total) pro
+        Guardian via `POST .../jobs/{job_id}/report`, com throttle -- ver
+        PROGRESS_REPORT_MIN_INTERVAL_SECONDS. `job_id` vem do payload do
+        comando (todo `run_transfer` carrega, ver
+        UniversalMigrationFileJob no lado Guardian); sem ele (payload
+        malformado/versão antiga do Guardian) o reporter vira um no-op
+        em vez de quebrar a transferência em si."""
+        job_id = command.payload.get("job_id")
+        last_report_at = [0.0]
+
+        def _report(bytes_done: int, bytes_total: int) -> None:
+            if not job_id:
+                return
+            now = time.monotonic()
+            is_final = bytes_total > 0 and bytes_done >= bytes_total
+            if not is_final and (now - last_report_at[0]) < PROGRESS_REPORT_MIN_INTERVAL_SECONDS:
+                return
+            last_report_at[0] = now
+            try:
+                self.client.report_job(
+                    self.config.agent_id,
+                    self.config.auth_token,
+                    job_id,
+                    "progress",
+                    {"bytes_done": bytes_done, "bytes_total": bytes_total},
+                )
+            except Exception:
+                logger.debug("Falha ao reportar progresso da transferência (não crítico)", exc_info=True)
+
+        return _report
+
     def _execute_and_report(self, command) -> None:
         description = self._describe_command(command)
         peer_label = self._peer_label_for(command)
         if peer_label:
             self.on_peer_status(peer_label)
+
+        handlers = self.handlers
+        if command.type == "run_transfer" and "run_transfer" in self.handlers:
+            progress_reporter = self._make_progress_reporter(command)
+            base_handler = self.handlers["run_transfer"]
+            handlers = {
+                **self.handlers,
+                "run_transfer": lambda payload: base_handler(payload, on_progress=progress_reporter),
+            }
+
         try:
-            result = dispatch(command.type, command.payload, self.handlers)
+            result = dispatch(command.type, command.payload, handlers)
             self.client.send_command_result(self.config.agent_id, self.config.auth_token, command.command_id, ok=True, result=result)
             self.on_activity(f"Comando concluído: {description}")
         except UnknownCommandError as exc:

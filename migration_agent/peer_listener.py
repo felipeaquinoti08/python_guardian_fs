@@ -43,6 +43,12 @@ _HEADER_STRUCT = struct.Struct(">I")
 @dataclass
 class ExpectedTransfer:
     dest_root: Path
+    # Issue #115: guardado junto da expectativa porque o recebimento de
+    # verdade acontece de forma assíncrona (bem depois de
+    # `commands.py::_run_receive_from_agent` já ter retornado) -- só
+    # `_receive_file` abaixo, quando a conexão chegar de fato, sabe o
+    # progresso real byte a byte.
+    on_progress: Optional[Callable[[int, int], None]] = None
 
 
 class PendingTokens:
@@ -52,9 +58,11 @@ class PendingTokens:
         self._lock = threading.Lock()
         self._pending: Dict[str, ExpectedTransfer] = {}
 
-    def expect(self, job_id: str, token: str, dest_root: Path) -> None:
+    def expect(
+        self, job_id: str, token: str, dest_root: Path, on_progress: Optional[Callable[[int, int], None]] = None
+    ) -> None:
         with self._lock:
-            self._pending[f"{job_id}:{token}"] = ExpectedTransfer(dest_root=dest_root)
+            self._pending[f"{job_id}:{token}"] = ExpectedTransfer(dest_root=dest_root, on_progress=on_progress)
 
     def consume(self, job_id: str, token: str) -> Optional[ExpectedTransfer]:
         key = f"{job_id}:{token}"
@@ -101,13 +109,13 @@ def _make_handler(pending: PendingTokens, on_status: Callable[[Optional[str]], N
                 peer_ip = self.client_address[0]
                 on_status(f"Recebendo arquivo de outro agent ({peer_ip})")
                 try:
-                    self._receive_file(sock, expected.dest_root, relative_path, size)
+                    self._receive_file(sock, expected.dest_root, relative_path, size, expected.on_progress)
                 finally:
                     on_status(None)
             except Exception:
                 logger.exception("Falha atendendo conexão de transferência agent<->agent")
 
-        def _receive_file(self, sock, dest_root: Path, relative_path: str, size: int):
+        def _receive_file(self, sock, dest_root: Path, relative_path: str, size: int, on_progress=None):
             dest_path = (dest_root / relative_path).resolve()
             if dest_root.resolve() not in dest_path.parents and dest_path != dest_root.resolve():
                 raise ValueError(f"relative_path escapando do destino: {relative_path!r}")
@@ -117,6 +125,9 @@ def _make_handler(pending: PendingTokens, on_status: Callable[[Optional[str]], N
 
             digest = hashlib.sha256()
             remaining = size
+            received = 0
+            if on_progress:
+                on_progress(received, size)
             with open(tmp_path, "wb") as fh:
                 while remaining > 0:
                     chunk = sock.recv(min(65536, remaining))
@@ -125,6 +136,9 @@ def _make_handler(pending: PendingTokens, on_status: Callable[[Optional[str]], N
                     fh.write(chunk)
                     digest.update(chunk)
                     remaining -= len(chunk)
+                    received += len(chunk)
+                    if on_progress:
+                        on_progress(received, size)
 
             tmp_path.replace(dest_path)
             response = {"ok": True, "sha256": digest.hexdigest()}

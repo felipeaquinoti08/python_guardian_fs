@@ -19,7 +19,7 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -29,6 +29,16 @@ _CHUNK_SIZE = 65536
 # -- mesmo tamanho de chunk usado pelo Guardian em SharepointAdapter::uploadStream()
 # quando é ele quem sobe (cenário cloud-a-cloud).
 _GRAPH_CHUNK_SIZE = 3276800
+
+# Issue #115: (bytes_ja_transferidos, bytes_totais) -- chamado a cada chunk
+# em todas as funções deste módulo. Quem passa o callback (poller.py) decide
+# a cadência de report de verdade pro Guardian (throttle próprio, pra não
+# virar uma chamada HTTP por chunk de 64KB numa transferência de 600MB).
+ProgressCallback = Callable[[int, int], None]
+
+
+def _noop_progress(_done: int, _total: int) -> None:
+    pass
 
 
 class TransferError(Exception):
@@ -63,6 +73,7 @@ def push_file_to_peer(
     relative_path: str,
     max_bandwidth_mbps: Optional[float] = None,
     connect_timeout: float = 10.0,
+    on_progress: ProgressCallback = _noop_progress,
 ) -> dict:
     """Empurra um arquivo direto pro peer_listener de outro agent.
 
@@ -91,6 +102,7 @@ def push_file_to_peer(
 
             with open(path, "rb") as fh:
                 sent = 0
+                on_progress(sent, size)
                 while sent < size:
                     chunk = fh.read(min(_CHUNK_SIZE, size - sent))
                     if not chunk:
@@ -99,6 +111,7 @@ def push_file_to_peer(
                     digest.update(chunk)
                     sent += len(chunk)
                     limiter.throttle(len(chunk))
+                    on_progress(sent, size)
 
             response_raw = sock.recv(65536)
             if not response_raw:
@@ -152,10 +165,12 @@ class ThrottledFileReader:
     (que a maioria dos serviços de blob storage não aceita num PUT simples).
     """
 
-    def __init__(self, path: Path, limiter: RateLimiter):
+    def __init__(self, path: Path, limiter: RateLimiter, on_progress: ProgressCallback = _noop_progress):
         self._file = open(path, "rb")
         self._limiter = limiter
         self._size = path.stat().st_size
+        self._on_progress = on_progress
+        self._read_so_far = 0
 
     def __len__(self) -> int:
         return self._size
@@ -164,13 +179,17 @@ class ThrottledFileReader:
         chunk = self._file.read(_CHUNK_SIZE if size in (-1, None) else size)
         if chunk:
             self._limiter.throttle(len(chunk))
+            self._read_so_far += len(chunk)
+            self._on_progress(self._read_so_far, self._size)
         return chunk
 
     def close(self) -> None:
         self._file.close()
 
 
-def upload_to_cloud(path: Path, credential: dict, max_bandwidth_mbps: Optional[float] = None) -> dict:
+def upload_to_cloud(
+    path: Path, credential: dict, max_bandwidth_mbps: Optional[float] = None, on_progress: ProgressCallback = _noop_progress
+) -> dict:
     """Sobe `path` direto pro provedor cloud usando a credencial de curta
     duração gerada pelo Guardian. `credential["type"]` decide o protocolo.
     """
@@ -179,16 +198,20 @@ def upload_to_cloud(path: Path, credential: dict, max_bandwidth_mbps: Optional[f
 
     cred_type = credential.get("type")
     if cred_type == "graph_upload_session":
-        return _upload_graph_session(path, credential, max_bandwidth_mbps)
+        return _upload_graph_session(path, credential, max_bandwidth_mbps, on_progress)
     if cred_type == "azure_sas_put":
-        return _upload_via_put(path, credential, max_bandwidth_mbps, default_headers={"x-ms-blob-type": "BlockBlob"})
+        return _upload_via_put(
+            path, credential, max_bandwidth_mbps, default_headers={"x-ms-blob-type": "BlockBlob"}, on_progress=on_progress
+        )
     if cred_type == "s3_presigned_put":
-        return _upload_via_put(path, credential, max_bandwidth_mbps, default_headers={})
+        return _upload_via_put(path, credential, max_bandwidth_mbps, default_headers={}, on_progress=on_progress)
 
     raise TransferError(f"Tipo de credencial de upload desconhecido: {cred_type!r}")
 
 
-def _upload_graph_session(path: Path, credential: dict, max_bandwidth_mbps: Optional[float]) -> dict:
+def _upload_graph_session(
+    path: Path, credential: dict, max_bandwidth_mbps: Optional[float], on_progress: ProgressCallback = _noop_progress
+) -> dict:
     size = path.stat().st_size
     limiter = RateLimiter(max_bandwidth_mbps)
     upload_url = credential["uploadUrl"]
@@ -203,6 +226,7 @@ def _upload_graph_session(path: Path, credential: dict, max_bandwidth_mbps: Opti
 
     with open(path, "rb") as fh:
         offset = 0
+        on_progress(offset, size)
         while offset < size:
             chunk = fh.read(min(_GRAPH_CHUNK_SIZE, size - offset))
             if not chunk:
@@ -218,13 +242,20 @@ def _upload_graph_session(path: Path, credential: dict, max_bandwidth_mbps: Opti
                 raise TransferError(f"Upload Graph falhou (HTTP {resp.status_code}): {resp.text[:300]}")
             limiter.throttle(len(chunk))
             offset += len(chunk)
+            on_progress(offset, size)
 
     return {"bytes_sent": size}
 
 
-def _upload_via_put(path: Path, credential: dict, max_bandwidth_mbps: Optional[float], default_headers: dict) -> dict:
+def _upload_via_put(
+    path: Path,
+    credential: dict,
+    max_bandwidth_mbps: Optional[float],
+    default_headers: dict,
+    on_progress: ProgressCallback = _noop_progress,
+) -> dict:
     limiter = RateLimiter(max_bandwidth_mbps)
-    reader = ThrottledFileReader(path, limiter)
+    reader = ThrottledFileReader(path, limiter, on_progress)
     headers = {**default_headers, **(credential.get("headers") or {})}
     try:
         resp = requests.put(credential["url"], data=reader, headers=headers, timeout=600)
@@ -238,7 +269,11 @@ def _upload_via_put(path: Path, credential: dict, max_bandwidth_mbps: Optional[f
 
 
 def download_from_cloud(
-    url: str, dest_path: Path, max_bandwidth_mbps: Optional[float] = None, expected_size: Optional[int] = None
+    url: str,
+    dest_path: Path,
+    max_bandwidth_mbps: Optional[float] = None,
+    expected_size: Optional[int] = None,
+    on_progress: ProgressCallback = _noop_progress,
 ) -> dict:
     """Baixa direto do link temporário gerado pelo Guardian pra `dest_path`."""
     limiter = RateLimiter(max_bandwidth_mbps)
@@ -250,7 +285,12 @@ def download_from_cloud(
         if resp.status_code != 200:
             raise TransferError(f"Download falhou (HTTP {resp.status_code}): {resp.text[:300]}")
 
+        # expected_size normalmente vem do Guardian (tamanho já conhecido na
+        # origem); Content-Length é só um fallback pro raro caso de vir vazio.
+        total_size = expected_size or int(resp.headers.get("Content-Length") or 0) or None
+
         with open(tmp_path, "wb") as fh:
+            on_progress(0, total_size or 0)
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
                     continue
@@ -258,6 +298,7 @@ def download_from_cloud(
                 digest.update(chunk)
                 total += len(chunk)
                 limiter.throttle(len(chunk))
+                on_progress(total, total_size or total)
 
     if expected_size is not None and total != expected_size:
         tmp_path.unlink(missing_ok=True)
