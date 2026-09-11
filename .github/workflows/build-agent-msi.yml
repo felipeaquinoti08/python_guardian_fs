@@ -69,7 +69,17 @@ jobs:
         run: pyinstaller packaging\build_exe.spec
 
       - name: Instalar WiX Toolset v3
-        run: choco install wixtoolset -y --no-progress
+        # Issue #107: versao fixada em 3.11.2 (nao "latest"). O
+        # UIExtension.dll da versao 3.14.x do WiX Toolset tem um bug real
+        # conhecido: o wixlib da extensao embute ao mesmo tempo o
+        # WelcomeEulaDlg.wxs (dialog combinado, mais novo) E o par
+        # classico WelcomeDlg.wxs/LicenseAgreementDlg.wxs, e os dois
+        # definem um CheckBox com o mesmo Id "LicenseAccepted" -- o
+        # light.exe falha com LGHT0091 (Duplicate symbol) so por usar
+        # UIRef Id="WixUI_Minimal", antes mesmo de qualquer diálogo
+        # customizado nosso. 3.11.2 e a ultima versao 3.x sem esse
+        # regressao.
+        run: choco install wixtoolset --version=3.11.2 -y --no-progress
 
       - name: Baixar Visual C++ Redistributable (embutido no MSI)
         # Link permanente oficial da Microsoft (sempre aponta pra ultima
