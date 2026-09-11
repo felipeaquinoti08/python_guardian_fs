@@ -62,21 +62,47 @@ def test_generate_default_password_avoids_ambiguous_characters():
     assert not any(c in password for c in "0O1lI")
 
 
-def test_first_load_generates_default_ui_password(tmp_path):
+def test_first_load_bootstraps_default_ui_password_as_admin_admin(tmp_path):
     cfg = ConfigStore(state_dir=tmp_path).load()
     assert cfg.ui_username == "admin"
     assert cfg.ui_password_is_default is True
-    assert cfg.ui_default_password
-    assert verify_password(cfg.ui_default_password, cfg.ui_password_hash) is True
+    assert cfg.ui_default_password == "admin"
+    assert verify_password("admin", cfg.ui_password_hash) is True
+
+
+def test_loading_pre_issue_109_config_without_password_fields_backfills_default(tmp_path):
+    store = ConfigStore(state_dir=tmp_path)
+    # simula um config.json de uma instalacao anterior a issue #109 (sem
+    # nenhum campo de autenticacao ainda, so os campos que ja existiam)
+    store.config_path.write_text(
+        '{"guardian_base_url": "", "agent_id": null, "cliente_nome": null, '
+        '"local_ui_port": 12345, "peer_listener_port": 12346, "peer_listener_ip": null}',
+        "utf-8",
+    )
+
+    cfg = store.load()
+
+    assert cfg.ui_password_hash
+    assert cfg.ui_password_is_default is True
+    assert cfg.ui_default_password == "admin"
+    assert verify_password("admin", cfg.ui_password_hash) is True
+
+    # persistido: um load seguinte nao perde o backfill
+    reloaded = ConfigStore(state_dir=tmp_path).load()
+    assert reloaded.ui_default_password == "admin"
 
 
 def test_ui_default_password_never_written_in_plaintext(tmp_path):
-    store = ConfigStore(state_dir=tmp_path)
-    cfg = store.load()
+    import json
 
-    raw = store.config_path.read_text("utf-8")
+    store = ConfigStore(state_dir=tmp_path)
+    store.load()
+
+    raw = json.loads(store.config_path.read_text("utf-8"))
     assert "ui_default_password_encrypted" in raw
-    assert cfg.ui_default_password not in raw
+    # a chave em texto puro nao pode existir (mesmo tratamento do auth_token)
+    # -- "admin" aparecer como valor de ui_username e esperado, nao e leak
+    assert "ui_default_password" not in raw
 
 
 def test_reset_ui_password_generates_new_password_and_invalidates_old_one(tmp_path):

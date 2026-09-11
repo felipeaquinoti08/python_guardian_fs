@@ -24,6 +24,14 @@ from .crypto_store import get_secret_store
 logger = logging.getLogger(__name__)
 
 _PBKDF2_ITERATIONS = 260_000
+# Senha inicial da UI local (issue #109): usuario pediu simplicidade nessa
+# primeira fase (credenciais fixas e conhecidas, "admin"/"admin"), em vez de
+# uma senha aleatoria dificil de descobrir logo na primeira instalacao --
+# ainda fica marcada como "padrao" e o dashboard/login mostram um aviso ate
+# ser trocada em /change-password. Recuperacao de senha esquecida (CLI
+# `reset-ui-password`) continua gerando uma senha aleatoria de verdade (ver
+# generate_default_password), so o bootstrap inicial que ficou fixo.
+_BOOTSTRAP_PASSWORD = "admin"
 _DEFAULT_PASSWORD_ALPHABET = "".join(
     c for c in (string.ascii_uppercase + string.ascii_lowercase + string.digits) if c not in "0O1lI"
 )
@@ -103,15 +111,8 @@ class ConfigStore:
     def load(self) -> AgentConfig:
         if not self.config_path.exists():
             cfg = AgentConfig()
-            password = generate_default_password()
-            cfg.ui_password_hash = hash_password(password)
-            cfg.ui_default_password = password
-            cfg.ui_password_is_default = True
+            self._bootstrap_default_password(cfg)
             self.save(cfg)
-            logger.info(
-                "Senha padrao da UI local gerada (usuario %r). Troque em /change-password assim que possivel.",
-                cfg.ui_username,
-            )
             return cfg
 
         raw = json.loads(self.config_path.read_text("utf-8"))
@@ -124,7 +125,27 @@ class ConfigStore:
             cfg.ui_default_password = self._secret_store.decrypt(bytes.fromhex(encrypted_default_password)).decode(
                 "utf-8"
             )
+
+        if not cfg.ui_password_hash:
+            # config.json de uma instalacao anterior a issue #109 (sem
+            # autenticacao na UI local ainda) -- sem isso, o login ficava
+            # permanentemente quebrado apos a atualizacao (hash vazio nunca
+            # bate com nenhuma senha) e o aviso de senha padrao nao aparecia
+            # (ui_default_password ficava None). Backfill igual a um
+            # primeiro start.
+            self._bootstrap_default_password(cfg)
+            self.save(cfg)
+
         return cfg
+
+    def _bootstrap_default_password(self, cfg: AgentConfig) -> None:
+        cfg.ui_password_hash = hash_password(_BOOTSTRAP_PASSWORD)
+        cfg.ui_default_password = _BOOTSTRAP_PASSWORD
+        cfg.ui_password_is_default = True
+        logger.info(
+            "Senha padrao da UI local definida (usuario %r). Troque em /change-password assim que possivel.",
+            cfg.ui_username,
+        )
 
     def save(self, cfg: AgentConfig) -> None:
         data = asdict(cfg)
