@@ -46,7 +46,7 @@
     <!--
       Issue #107: atalhos opcionais de Menu Iniciar/Area de Trabalho.
       Propriedades publicas (nome em maiusculas) com valor padrao "1"
-      (cria os dois por padrao) -- tambem podem ser setadas direto na
+      (cria os dois por padrao), tambem podem ser setadas direto na
       linha de comando pra instalacoes silenciosas/automatizadas, ex:
       msiexec /i GuardianMigrationAgent.msi /qb INSTALLDESKTOPSHORTCUT=0
     -->
@@ -141,10 +141,10 @@
     <!--
       Issue #107: atalhos opcionais de Menu Iniciar/Area de Trabalho,
       apontando pro proprio .exe com o subcomando "open-ui" (abre a UI
-      local de pareamento no navegador -- ver migration_agent/__main__.py,
+      local de pareamento no navegador, ver migration_agent/__main__.py,
       _cmd_open_ui). Cada Component so e instalado se a Property
       correspondente (marcada via checkbox no wizard, ver <UI> abaixo, ou
-      passada na linha de comando) estiver com valor "1" -- controlado
+      passada na linha de comando) estiver com valor "1", controlado
       pela <Condition> de cada Component.
     -->
     <ComponentGroup Id="ShortcutComponents">
@@ -152,7 +152,7 @@
         <!--
           "= 1" explicito (nao so o nome da property sozinho): um
           CheckBox do WiX sem valor "desmarcado" definido so REMOVE a
-          property (fica vazia) quando desmarcado -- mas passar
+          property (fica vazia) quando desmarcado, mas passar
           INSTALLSTARTMENUSHORTCUT=0 na linha de comando (instalacao
           silenciosa) deixaria a property com a string nao-vazia "0",
           que uma condicao so-com-o-nome trataria como verdadeiro por
@@ -198,7 +198,7 @@
     </Feature>
 
     <!--
-      Issue #107: wizard minimo (WixUI_Minimal, requer WixUIExtension --
+      Issue #107: wizard minimo (WixUI_Minimal, requer WixUIExtension,
       ver -ext no build-agent-msi.yml) com uma tela extra (ShortcutsDlg)
       inserida entre a tela de boas-vindas e a de licenca, com checkboxes
       pras duas Property acima. Padrao documentado do proprio WiX pra
