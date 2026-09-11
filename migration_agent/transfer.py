@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import queue
 import socket
 import struct
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -29,6 +31,28 @@ _CHUNK_SIZE = 65536
 # -- mesmo tamanho de chunk usado pelo Guardian em SharepointAdapter::uploadStream()
 # quando é ele quem sobe (cenário cloud-a-cloud).
 _GRAPH_CHUNK_SIZE = 3276800
+
+# Issue #116: bug real em produção -- um arquivo .pst aberto no Outlook na
+# máquina de origem travou uma transferência por mais de 55min sem NENHUM
+# erro reportado (o agent continuava online/respondendo ao long-poll
+# normalmente -- só a thread de fundo daquele arquivo específico ficava
+# presa pra sempre). Causa: leitura de um arquivo bloqueado por outro
+# processo (lock do Windows, comum em .pst aberto/em uso) pode travar
+# indefinidamente no nível do SO -- `fh.read()` não tem NENHUM mecanismo de
+# timeout nativo em Python, diferente de chamadas de rede (socket/requests,
+# que já tinham timeout configurado desde sempre). 60s é bem acima do que
+# uma leitura local/de rede legítima deveria levar pra um chunk só.
+_READ_TIMEOUT_SECONDS = 60.0
+
+# Issue #116 (parte 2, pedido do usuário): um arquivo em uso não é um erro
+# definitivo, é uma condição transitória -- em vez de só falhar rápido,
+# detecta isso ANTES de começar a transferência de verdade (probe curto,
+# só precisa confirmar que dá pra ler o começo do arquivo) e levanta um
+# erro DISTINGUÍVEL (mensagem com "em uso por outro programa"), que o
+# lado Guardian reconhece pra mostrar um status amigável -- o retry em si
+# já existe (Horizon, backoff crescente: 1min/3min/5min/15min/30min/1h),
+# reaproveitado em vez de reinventar um loop de espera dentro do agent.
+_LOCK_CHECK_TIMEOUT_SECONDS = 10.0
 
 # Issue #115: (bytes_ja_transferidos, bytes_totais) -- chamado a cada chunk
 # em todas as funções deste módulo. Quem passa o callback (poller.py) decide
@@ -64,6 +88,82 @@ class RateLimiter:
             time.sleep(expected_seconds - elapsed_seconds)
 
 
+_READ_DONE = object()
+
+
+class TimeoutFileReader:
+    """Lê `path` em chunks numa thread de fundo dedicada, alimentando uma
+    fila -- `read_chunk()` espera cada chunk com timeout, em vez de um
+    `fh.read()` direto que pode travar pra sempre se o arquivo estiver
+    bloqueado por outro processo (issue #116).
+
+    A thread de leitura fica presa (não tem como matar uma thread Python à
+    força) se o `open()`/`read()` subjacente nunca retornar -- mas isso é
+    aceitável: o objetivo aqui não é liberar esse recurso do SO, é NÃO
+    deixar a transferência (e o comando `run_transfer` inteiro) travada
+    indefinidamente sem reportar nada pro Guardian. Uma thread órfã e
+    presa é um custo bem menor que um comando que nunca retorna.
+    """
+
+    def __init__(self, path: Path, chunk_size: int, timeout_seconds: Optional[float] = None):
+        self._path = path
+        # Lido em tempo de chamada (não como valor padrão do parâmetro,
+        # fixado em tempo de definição da função) -- testes precisam
+        # conseguir ajustar _READ_TIMEOUT_SECONDS e ver efeito imediato
+        # em quem cria um TimeoutFileReader sem passar o parâmetro.
+        self._timeout_seconds = timeout_seconds if timeout_seconds is not None else _READ_TIMEOUT_SECONDS
+        self._queue: "queue.Queue" = queue.Queue(maxsize=4)
+        self._error: Optional[Exception] = None
+        self._thread = threading.Thread(target=self._read_loop, args=(chunk_size,), daemon=True, name="file-reader")
+        self._thread.start()
+
+    def _read_loop(self, chunk_size: int) -> None:
+        try:
+            with open(self._path, "rb") as fh:
+                while True:
+                    chunk = fh.read(chunk_size)
+                    if not chunk:
+                        self._queue.put(_READ_DONE)
+                        return
+                    self._queue.put(chunk)
+        except Exception as exc:  # noqa: BLE001 - qualquer erro de leitura vira TransferError claro em read_chunk()
+            self._error = exc
+            self._queue.put(_READ_DONE)
+
+    def read_chunk(self) -> bytes:
+        try:
+            item = self._queue.get(timeout=self._timeout_seconds)
+        except queue.Empty:
+            raise TransferError(
+                f"Leitura do arquivo travou por mais de {int(self._timeout_seconds)}s -- "
+                f"ele pode estar aberto/bloqueado por outro programa na origem: {self._path}"
+            )
+
+        if item is _READ_DONE:
+            if self._error is not None:
+                raise TransferError(f"Falha lendo o arquivo {self._path}: {self._error}")
+            return b""
+
+        return item
+
+
+def _ensure_file_available(path: Path, timeout_seconds: Optional[float] = None) -> None:
+    """Probe curto (só o suficiente pra confirmar que dá pra ler o começo
+    do arquivo) ANTES de iniciar a transferência de verdade -- se o
+    arquivo estiver aberto/bloqueado por outro programa (ex: .pst no
+    Outlook), detecta rápido (10s) em vez dos 60s do timeout geral de
+    transferência, e levanta um erro com uma mensagem reconhecível pelo
+    lado Guardian (ver UniversalMigrationFileJob, issue #116)."""
+    resolved_timeout = timeout_seconds if timeout_seconds is not None else _LOCK_CHECK_TIMEOUT_SECONDS
+    probe = TimeoutFileReader(path, chunk_size=1, timeout_seconds=resolved_timeout)
+    try:
+        probe.read_chunk()
+    except TransferError as exc:
+        raise TransferError(
+            f"Arquivo em uso por outro programa (ex: aberto no Outlook/Excel/etc.) -- {path}"
+        ) from exc
+
+
 def push_file_to_peer(
     source_path: str,
     dest_ip: str,
@@ -84,6 +184,7 @@ def push_file_to_peer(
     path = Path(source_path)
     if not path.is_file():
         raise TransferError(f"Arquivo de origem não encontrado: {source_path!r}")
+    _ensure_file_available(path)
 
     size = path.stat().st_size
     limiter = RateLimiter(max_bandwidth_mbps)
@@ -100,18 +201,18 @@ def push_file_to_peer(
             if ack != b"OK":
                 raise TransferError(f"Destino recusou a transferência (handshake inválido/token não esperado): {ack!r}")
 
-            with open(path, "rb") as fh:
-                sent = 0
+            reader = TimeoutFileReader(path, _CHUNK_SIZE)
+            sent = 0
+            on_progress(sent, size)
+            while sent < size:
+                chunk = reader.read_chunk()
+                if not chunk:
+                    break
+                sock.sendall(chunk)
+                digest.update(chunk)
+                sent += len(chunk)
+                limiter.throttle(len(chunk))
                 on_progress(sent, size)
-                while sent < size:
-                    chunk = fh.read(min(_CHUNK_SIZE, size - sent))
-                    if not chunk:
-                        break
-                    sock.sendall(chunk)
-                    digest.update(chunk)
-                    sent += len(chunk)
-                    limiter.throttle(len(chunk))
-                    on_progress(sent, size)
 
             response_raw = sock.recv(65536)
             if not response_raw:
@@ -163,28 +264,43 @@ class ThrottledFileReader:
     (tem `.read()` e `__len__`) -- o `requests` usa `__len__` pra mandar
     `Content-Length` corretamente em vez de cair em chunked transfer-encoding
     (que a maioria dos serviços de blob storage não aceita num PUT simples).
+
+    Lê via `TimeoutFileReader` (issue #116) num tamanho de chunk fixo,
+    passando por um buffer interno pra atender `read(size)` com qualquer
+    tamanho que o `requests`/`urllib3` pedir (que não necessariamente bate
+    com o chunk que o reader de fundo produz).
     """
 
     def __init__(self, path: Path, limiter: RateLimiter, on_progress: ProgressCallback = _noop_progress):
-        self._file = open(path, "rb")
+        self._reader = TimeoutFileReader(path, _CHUNK_SIZE)
         self._limiter = limiter
         self._size = path.stat().st_size
         self._on_progress = on_progress
         self._read_so_far = 0
+        self._buffer = b""
+        self._exhausted = False
 
     def __len__(self) -> int:
         return self._size
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self._file.read(_CHUNK_SIZE if size in (-1, None) else size)
-        if chunk:
-            self._limiter.throttle(len(chunk))
-            self._read_so_far += len(chunk)
+        want = _CHUNK_SIZE if size in (-1, None) else size
+        while len(self._buffer) < want and not self._exhausted:
+            chunk = self._reader.read_chunk()
+            if not chunk:
+                self._exhausted = True
+                break
+            self._buffer += chunk
+
+        result, self._buffer = self._buffer[:want], self._buffer[want:]
+        if result:
+            self._limiter.throttle(len(result))
+            self._read_so_far += len(result)
             self._on_progress(self._read_so_far, self._size)
-        return chunk
+        return result
 
     def close(self) -> None:
-        self._file.close()
+        pass
 
 
 def upload_to_cloud(
@@ -195,6 +311,7 @@ def upload_to_cloud(
     """
     if not path.is_file():
         raise TransferError(f"Arquivo de origem não encontrado: {path}")
+    _ensure_file_available(path)
 
     cred_type = credential.get("type")
     if cred_type == "graph_upload_session":
@@ -224,25 +341,25 @@ def _upload_graph_session(
             raise TransferError(f"Upload Graph (arquivo vazio) falhou (HTTP {resp.status_code}): {resp.text[:300]}")
         return {"bytes_sent": 0}
 
-    with open(path, "rb") as fh:
-        offset = 0
+    reader = TimeoutFileReader(path, _GRAPH_CHUNK_SIZE)
+    offset = 0
+    on_progress(offset, size)
+    while offset < size:
+        chunk = reader.read_chunk()
+        if not chunk:
+            break
+        end = offset + len(chunk) - 1
+        resp = requests.put(
+            upload_url,
+            data=chunk,
+            headers={"Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{size}"},
+            timeout=120,
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise TransferError(f"Upload Graph falhou (HTTP {resp.status_code}): {resp.text[:300]}")
+        limiter.throttle(len(chunk))
+        offset += len(chunk)
         on_progress(offset, size)
-        while offset < size:
-            chunk = fh.read(min(_GRAPH_CHUNK_SIZE, size - offset))
-            if not chunk:
-                break
-            end = offset + len(chunk) - 1
-            resp = requests.put(
-                upload_url,
-                data=chunk,
-                headers={"Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{size}"},
-                timeout=120,
-            )
-            if resp.status_code not in (200, 201, 202):
-                raise TransferError(f"Upload Graph falhou (HTTP {resp.status_code}): {resp.text[:300]}")
-            limiter.throttle(len(chunk))
-            offset += len(chunk)
-            on_progress(offset, size)
 
     return {"bytes_sent": size}
 

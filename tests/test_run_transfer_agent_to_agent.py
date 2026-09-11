@@ -1,7 +1,10 @@
 import threading
+import time
+from unittest.mock import patch
 
 import pytest
 
+import migration_agent.transfer as transfer_mod
 from migration_agent.commands import handle_run_transfer
 from migration_agent.peer_listener import PendingTokens, make_peer_listener
 
@@ -224,5 +227,64 @@ def test_receive_from_agent_reports_progress_on_receiver_side(tmp_path):
 
         assert progress_calls[0] == (0, 500 * 1024)
         assert progress_calls[-1] == (500 * 1024, 500 * 1024)
+    finally:
+        server.shutdown()
+
+
+def test_push_to_agent_fails_fast_instead_of_hanging_on_locked_source_file(tmp_path):
+    """Issue #116: reproduz o bug real -- um arquivo bloqueado por outro
+    processo (ex: .pst aberto no Outlook) não pode travar a transferência
+    indefinidamente. Simula o lock via um arquivo "preso" que nunca
+    termina de ler; `push_to_agent` deve falhar rápido (timeout do
+    TimeoutFileReader), não travar por horas."""
+    server, pending, port = _start_listener(tmp_path)
+    try:
+        dest_root = tmp_path / "dest_share"
+        dest_root.mkdir()
+        source_file = tmp_path / "arquivo_travado.pst"
+        source_file.write_bytes(b"dados")
+
+        handle_run_transfer({
+            "mode": "receive_from_agent", "job_id": "job-lock", "token": "tok-lock", "dest_root": str(dest_root),
+        }, pending_tokens=pending)
+
+        class _StuckFile:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def read(self, _n):
+                time.sleep(5)
+                return b""
+
+        original_read_timeout = transfer_mod._READ_TIMEOUT_SECONDS
+        original_lock_timeout = transfer_mod._LOCK_CHECK_TIMEOUT_SECONDS
+        transfer_mod._READ_TIMEOUT_SECONDS = 0.2
+        transfer_mod._LOCK_CHECK_TIMEOUT_SECONDS = 0.2
+        try:
+            with patch("migration_agent.transfer.open", return_value=_StuckFile()):
+                start = time.monotonic()
+                # O pre-check de disponibilidade (issue #116, parte 2) pega
+                # isso antes mesmo da transferencia de verdade comecar --
+                # mensagem distinta ("em uso"), nao a generica de timeout
+                # ("travou") do meio da transferencia.
+                with pytest.raises(RuntimeError, match="em uso por outro programa"):
+                    handle_run_transfer({
+                        "mode": "push_to_agent",
+                        "source_path": str(source_file),
+                        "dest_ip": "127.0.0.1",
+                        "dest_port": port,
+                        "job_id": "job-lock",
+                        "token": "tok-lock",
+                        "relative_path": "arquivo_travado.pst",
+                    })
+                elapsed = time.monotonic() - start
+        finally:
+            transfer_mod._READ_TIMEOUT_SECONDS = original_read_timeout
+            transfer_mod._LOCK_CHECK_TIMEOUT_SECONDS = original_lock_timeout
+
+        assert elapsed < 2, f"deveria falhar rapido (timeout curto), levou {elapsed}s"
     finally:
         server.shutdown()
