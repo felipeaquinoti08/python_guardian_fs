@@ -119,15 +119,40 @@ def _setup_file_logging() -> None:
 
 def _dispatch_to_scm() -> None:
     """Sem argumentos = invocado pelo Windows SCM pra rodar o serviço de
-    verdade -- delega pro dispatcher do pywin32, que reconhece esse caso
-    sozinho (ver docstring do módulo)."""
+    verdade.
+
+    Issue #107: o `agent.log` de uma instalação real (build 21) mostrou
+    "Despachando pro Service Control Manager" logado **7 vezes**, em
+    intervalos de ~5.3-5.6s, cobrindo exatamente os ~33s até o Error 1920
+    -- ou seja, o SCM mata e reinicia o processo repetidamente, e em
+    NENHUMA dessas tentativas o código chega a entrar em `SvcDoRun()`
+    (nenhum log das linhas novas adicionadas lá em service_windows.py
+    apareceu). O problema está aqui, dentro do handshake com o SCM --
+    antes mesmo do nosso código de serviço rodar. Antes chamávamos
+    `win32serviceutil.HandleCommandLine(...)`, que internamente (pro caso
+    "sem argumentos") só faz `PrepareToHostSingle` +
+    `servicemanager.Initialize()` + `servicemanager.StartServiceCtrlDispatcher()`
+    -- reimplementado aqui explicitamente, com log entre cada uma, pra
+    finalmente descobrir qual dessas três chamadas está falhando ou
+    retornando cedo demais (ao inves de bloquear ate o servico parar,
+    como deveria)."""
     _setup_file_logging()
     logger = logging.getLogger(__name__)
+    logger.info("Despachando pro Service Control Manager (sem argumentos recebidos).")
     try:
         from . import service_windows
 
-        logger.info("Despachando pro Service Control Manager (sem argumentos recebidos).")
-        service_windows.win32serviceutil.HandleCommandLine(service_windows.MigrationAgentService)
+        logger.info("Chamando servicemanager.PrepareToHostSingle...")
+        service_windows.servicemanager.PrepareToHostSingle(service_windows.MigrationAgentService)
+        logger.info("PrepareToHostSingle concluido -- chamando servicemanager.Initialize...")
+        service_windows.servicemanager.Initialize()
+        logger.info("Initialize concluido -- chamando StartServiceCtrlDispatcher (deveria bloquear ate o servico parar)...")
+        service_windows.servicemanager.StartServiceCtrlDispatcher()
+        logger.warning(
+            "StartServiceCtrlDispatcher RETORNOU -- isso so deveria acontecer apos o servico ser "
+            "parado de verdade (SvcStop). Se SvcDoRun nunca rodou antes disso, o SCM nao conseguiu "
+            "conectar este processo ao pedido de start pendente."
+        )
     except Exception:
         logger.exception("Falha fatal despachando o serviço pro SCM")
         raise
