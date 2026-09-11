@@ -38,6 +38,20 @@
 #    arquivos no MSI agora usa heat.exe (harvester do próprio WiX Toolset)
 #    pra escanear a pasta `_internal` automaticamente em vez de listar
 #    manualmente -- ver build-agent-msi.yml e packaging/installer.wxs.
+#
+# 4. DESCOBERTO VIA C:\guardian_agent_crash.log (rede de seguranca
+#    adicionada em migration_agent/__main__.py) NUMA INSTALACAO REAL: com
+#    `Analysis(["../migration_agent/__main__.py"])` abaixo, o PyInstaller
+#    congelava esse arquivo como um script solto -- o bootloader roda ele
+#    sem contexto de pacote (`__package__` vazio), quebrando o import
+#    relativo `from .agent_runtime import AgentRuntime` la dentro com
+#    `ImportError: attempted relative import with no known parent
+#    package`. Isso derrubava o processo (selftest OU o servico de
+#    verdade) com exit code 1 antes de qualquer logica rodar -- nada a
+#    ver com SCM/timeout/onefile-onedir, um bug de empacotamento
+#    separado. Corrigido usando `entrypoint.py` (bootstrap que importa
+#    `migration_agent.__main__` como submodulo de verdade) como script de
+#    entrada em vez do arquivo do pacote diretamente.
 
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -61,7 +75,7 @@ except ImportError:
     pass  # build rodando fora do Windows (dev/teste) -- sem pywin32 mesmo
 
 a = Analysis(
-    ["../migration_agent/__main__.py"],
+    ["entrypoint.py"],
     pathex=[".."],
     binaries=binaries,
     datas=[],
