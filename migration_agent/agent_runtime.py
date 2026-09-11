@@ -58,7 +58,9 @@ class AgentRuntime:
         _mark("thread status-server iniciada")
         self.state.record(f"UI local disponível em http://127.0.0.1:{cfg.local_ui_port}")
 
-        self._peer_server = make_peer_listener("0.0.0.0", cfg.peer_listener_port, self.pending_tokens)
+        self._peer_server = make_peer_listener(
+            "0.0.0.0", cfg.peer_listener_port, self.pending_tokens, on_status=self.state.set_peer_status
+        )
         _mark("peer_server criado (bind feito)")
         self._spawn(self._peer_server.serve_forever, "peer-listener")
         _mark("thread peer-listener iniciada")
@@ -101,6 +103,12 @@ class AgentRuntime:
 
             client = GuardianClient(cfg.guardian_base_url)
             poller = AgentPoller(
-                cfg, client=client, stop_event=self._stop_event, on_activity=self.state.record, handlers=self.handlers
+                cfg,
+                client=client,
+                stop_event=self._stop_event,
+                on_activity=self.state.record,
+                handlers=self.handlers,
+                on_guardian_status=self.state.set_guardian_status,
+                on_peer_status=self.state.set_peer_status,
             )
             poller.run_forever()

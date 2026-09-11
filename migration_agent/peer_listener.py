@@ -33,7 +33,7 @@ import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def _recv_exact(sock, n: int) -> bytes:
     return b"".join(chunks)
 
 
-def _make_handler(pending: PendingTokens):
+def _make_handler(pending: PendingTokens, on_status: Callable[[Optional[str]], None]):
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
             sock = self.request
@@ -95,7 +95,15 @@ def _make_handler(pending: PendingTokens):
                     return
 
                 sock.sendall(b"OK")
-                self._receive_file(sock, expected.dest_root, relative_path, size)
+                # Issue #112: só marca "conectado" a partir daqui -- antes
+                # disso a conexao pode ser qualquer coisa (porta escaneada,
+                # handshake invalido), nao uma transferencia de verdade.
+                peer_ip = self.client_address[0]
+                on_status(f"Recebendo arquivo de outro agent ({peer_ip})")
+                try:
+                    self._receive_file(sock, expected.dest_root, relative_path, size)
+                finally:
+                    on_status(None)
             except Exception:
                 logger.exception("Falha atendendo conexão de transferência agent<->agent")
 
@@ -130,5 +138,7 @@ class PeerListenerServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def make_peer_listener(bind_ip: str, port: int, pending: PendingTokens) -> PeerListenerServer:
-    return PeerListenerServer((bind_ip, port), _make_handler(pending))
+def make_peer_listener(
+    bind_ip: str, port: int, pending: PendingTokens, on_status: Optional[Callable[[Optional[str]], None]] = None
+) -> PeerListenerServer:
+    return PeerListenerServer((bind_ip, port), _make_handler(pending, on_status or (lambda label: None)))

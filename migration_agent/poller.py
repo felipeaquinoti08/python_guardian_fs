@@ -41,6 +41,8 @@ class AgentPoller:
         stop_event: Optional[threading.Event] = None,
         on_activity: Optional[Callable[[str], None]] = None,
         handlers: Optional[dict[str, CommandHandler]] = None,
+        on_guardian_status: Optional[Callable[[bool, Optional[str]], None]] = None,
+        on_peer_status: Optional[Callable[[Optional[str]], None]] = None,
     ):
         if not config.is_paired:
             raise ValueError("AgentPoller requer um AgentConfig pareado (agent_id + auth_token)")
@@ -49,6 +51,16 @@ class AgentPoller:
         self.stop_event = stop_event or threading.Event()
         self.on_activity = on_activity or (lambda msg: None)
         self.handlers = handlers if handlers is not None else DEFAULT_HANDLERS
+        # Issue #112: aba de configuração/conexão da UI local -- status real
+        # da conexão de long-poll (não um "acho que está ok" derivado do
+        # activity log) e, quando aplicável, da transferência agent<->agent
+        # em andamento no papel de quem ENVIA (push_to_agent). O lado que
+        # RECEBE (receive_from_agent) é reportado por peer_listener.py, não
+        # aqui -- esse handler só registra a expectativa e retorna na hora
+        # (ver commands.py::_run_receive_from_agent), o recebimento de fato
+        # acontece depois, de forma assíncrona.
+        self.on_guardian_status = on_guardian_status or (lambda connected, error=None: None)
+        self.on_peer_status = on_peer_status or (lambda label: None)
         self._backoff_seconds = MIN_BACKOFF_SECONDS
 
     def run_forever(self) -> None:
@@ -59,9 +71,11 @@ class AgentPoller:
         try:
             command = self.client.long_poll(self.config.agent_id, self.config.auth_token)
             self._backoff_seconds = MIN_BACKOFF_SECONDS
+            self.on_guardian_status(True)
         except requests.RequestException as exc:
             logger.warning("Long-poll falhou (%s) — retry em %ss", exc, self._backoff_seconds)
             self.on_activity(f"Guardian inacessível: {exc}")
+            self.on_guardian_status(False, str(exc))
             self.stop_event.wait(self._backoff_seconds)
             self._backoff_seconds = min(self._backoff_seconds * 2, MAX_BACKOFF_SECONDS)
             return
@@ -79,7 +93,19 @@ class AgentPoller:
 
         self._execute_and_report(command)
 
+    def _peer_label_for(self, command) -> Optional[str]:
+        if command.type != "run_transfer":
+            return None
+        if command.payload.get("mode") != "push_to_agent":
+            return None
+        dest_ip = command.payload.get("dest_ip", "?")
+        dest_port = command.payload.get("dest_port", "?")
+        return f"Enviando arquivo para outro agent ({dest_ip}:{dest_port})"
+
     def _execute_and_report(self, command) -> None:
+        peer_label = self._peer_label_for(command)
+        if peer_label:
+            self.on_peer_status(peer_label)
         try:
             result = dispatch(command.type, command.payload, self.handlers)
             self.client.send_command_result(self.config.agent_id, self.config.auth_token, command.command_id, ok=True, result=result)
@@ -98,3 +124,6 @@ class AgentPoller:
                 )
             except requests.RequestException:
                 logger.exception("Falha ao reportar erro do comando %s pro Guardian", command.command_id)
+        finally:
+            if peer_label:
+                self.on_peer_status(None)

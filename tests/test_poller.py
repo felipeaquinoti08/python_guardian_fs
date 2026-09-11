@@ -21,6 +21,77 @@ def test_cycle_with_no_pending_command_does_nothing():
     client.send_command_result.assert_not_called()
 
 
+def test_successful_cycle_reports_guardian_connected():
+    client = MagicMock()
+    client.long_poll.return_value = None
+    statuses = []
+    poller = AgentPoller(_paired_config(), client=client, on_guardian_status=lambda connected, error=None: statuses.append((connected, error)))
+
+    poller._run_one_cycle()
+
+    assert statuses == [(True, None)]
+
+
+def test_failed_cycle_reports_guardian_disconnected_with_error(monkeypatch):
+    import requests
+
+    client = MagicMock()
+    client.long_poll.side_effect = requests.ConnectionError("timeout")
+    statuses = []
+    poller = AgentPoller(_paired_config(), client=client, on_guardian_status=lambda connected, error=None: statuses.append((connected, error)))
+    monkeypatch.setattr(poller.stop_event, "wait", lambda seconds: None)  # nao espera o backoff de verdade no teste
+
+    poller._run_one_cycle()
+
+    assert statuses == [(False, "timeout")]
+
+
+def test_push_to_agent_reports_peer_status_during_transfer_and_clears_after():
+    transfer_started = threading.Event()
+    transfer_may_finish = threading.Event()
+
+    def slow_push_handler(payload):
+        transfer_started.set()
+        transfer_may_finish.wait(timeout=5)
+        return {"done": True}
+
+    client = MagicMock()
+    client.long_poll.return_value = AgentCommand(
+        command_id="cmd-push",
+        type="run_transfer",
+        payload={"mode": "push_to_agent", "dest_ip": "192.168.1.50", "dest_port": 5555},
+    )
+    peer_statuses = []
+    poller = AgentPoller(
+        _paired_config(),
+        client=client,
+        handlers={"run_transfer": slow_push_handler},
+        on_peer_status=peer_statuses.append,
+    )
+
+    thread = threading.Thread(target=poller._execute_and_report, args=(client.long_poll.return_value,))
+    thread.start()
+    assert transfer_started.wait(timeout=2)
+
+    assert peer_statuses[-1] == "Enviando arquivo para outro agent (192.168.1.50:5555)"
+
+    transfer_may_finish.set()
+    thread.join(timeout=5)
+
+    assert peer_statuses[-1] is None
+
+
+def test_non_transfer_command_never_touches_peer_status():
+    client = MagicMock()
+    client.long_poll.return_value = AgentCommand(command_id="cmd-1", type="connectivity_check", payload={"ip": "127.0.0.1", "port": 1, "timeout_seconds": 0.1})
+    peer_statuses = []
+    poller = AgentPoller(_paired_config(), client=client, on_peer_status=peer_statuses.append)
+
+    poller._run_one_cycle()
+
+    assert peer_statuses == []
+
+
 def test_cycle_dispatches_known_command_and_reports_success():
     client = MagicMock()
     client.long_poll.return_value = AgentCommand(command_id="cmd-1", type="connectivity_check", payload={"ip": "127.0.0.1", "port": 1, "timeout_seconds": 0.1})

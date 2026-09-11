@@ -10,7 +10,7 @@ import pytest
 from migration_agent import status_server as status_server_module
 from migration_agent.config import ConfigStore
 from migration_agent.runtime_state import ActivityEntry, RuntimeState
-from migration_agent.status_server import _classify_activity, _render_activity_table, make_server
+from migration_agent.status_server import _classify_activity, _render_activity_table, _render_connection_status, make_server
 
 
 class _FakeGuardianClient:
@@ -327,5 +327,55 @@ def test_update_apply_shows_error_banner_when_apply_fails(running_server, monkey
 
     assert "falha ao aplicar a atualização" in body.lower()
     assert "msiexec não encontrado" in body
+
+
+def test_render_connection_status_shows_disconnected_by_default():
+    state = RuntimeState()
+    rendered = _render_connection_status(state)
+    assert "desconectado" in rendered.lower()
+    assert "dot-error" in rendered
+    assert "outro agent" not in rendered.lower()
+
+
+def test_render_connection_status_shows_connected_guardian():
+    state = RuntimeState()
+    state.set_guardian_status(True)
+    rendered = _render_connection_status(state)
+    assert "conectado" in rendered.lower()
+    assert "dot-success" in rendered
+
+
+def test_render_connection_status_shows_active_peer_transfer():
+    state = RuntimeState()
+    state.set_guardian_status(True)
+    state.set_peer_status("Enviando arquivo para outro agent (10.0.0.5:5555)")
+
+    rendered = _render_connection_status(state)
+
+    assert "outro agent" in rendered.lower()
+    assert "10.0.0.5:5555" in rendered
+    assert "dot-info" in rendered
+
+
+def test_render_connection_status_hides_peer_row_when_inactive():
+    state = RuntimeState()
+    rendered = _render_connection_status(state)
+    assert "conn-row" in rendered  # so a linha do Guardian
+    assert rendered.count("conn-row") == 1
+
+
+def test_paired_page_shows_tabs_and_connection_status_in_config_tab(running_server):
+    store, port = running_server
+    _pair(store)
+    opener = _authenticated_opener(store, port)
+
+    body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
+
+    assert 'data-tab="acoes"' in body
+    assert 'data-tab="config"' in body
+    assert 'data-panel="acoes"' in body
+    assert 'data-panel="config"' in body
+    assert "status de conexão" in body.lower()
+    assert "versão instalada" in body.lower()
 
 

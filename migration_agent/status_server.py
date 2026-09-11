@@ -166,6 +166,27 @@ _PAGE_STYLE = """
     .top-links a { color: #64748b; font-size: 12px; text-decoration: none; }
     .top-links a:hover { color: #4f46e5; text-decoration: underline; }
     .footer-note { text-align: center; color: #94a3b8; font-size: 11px; margin-top: 24px; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; }
+    .tab-btn {
+        background: none;
+        border: none;
+        box-shadow: none;
+        width: auto;
+        border-radius: 0;
+        padding: 10px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #64748b;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+    }
+    .tab-btn:hover { color: #334155; transform: none; box-shadow: none; }
+    .tab-btn.active { color: #4f46e5; border-bottom-color: #4f46e5; }
+    .conn-status { display: flex; flex-direction: column; gap: 12px; margin-bottom: 8px; }
+    .conn-row { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: #334155; }
+    .conn-row .dot { margin-top: 4px; flex-shrink: 0; }
+    .conn-meta { color: #94a3b8; font-size: 12px; }
 """
 
 
@@ -260,13 +281,17 @@ def _classify_activity(message: str) -> str:
     return "info"
 
 
+def _fmt_datetime(timestamp: float) -> str:
+    return datetime.datetime.fromtimestamp(timestamp).strftime("%d/%m/%Y %H:%M:%S")
+
+
 def _render_activity_table(entries) -> str:
     if not entries:
         return '<p class="activity-empty">Nenhuma atividade ainda.</p>'
 
     rows = []
     for entry in entries:
-        when = datetime.datetime.fromtimestamp(entry.timestamp).strftime("%d/%m/%Y %H:%M:%S")
+        when = _fmt_datetime(entry.timestamp)
         kind = _classify_activity(entry.message)
         rows.append(
             "<tr>"
@@ -315,6 +340,52 @@ def _render_update_section(query: dict) -> str:
     """
 
 
+def _render_connection_status(state: RuntimeState) -> str:
+    guardian = state.guardian_status()
+    peer = state.peer_status()
+
+    if guardian.connected:
+        meta = f' <span class="conn-meta">(última resposta às {_fmt_datetime(guardian.last_success)})</span>' if guardian.last_success else ""
+        guardian_row = (
+            '<div class="conn-row"><span class="dot dot-success"></span>'
+            f"<div><b>Guardian:</b> Conectado{meta}</div></div>"
+        )
+    else:
+        detail = html.escape(guardian.last_error) if guardian.last_error else "aguardando primeira conexão"
+        guardian_row = (
+            '<div class="conn-row"><span class="dot dot-error"></span>'
+            f'<div><b>Guardian:</b> Desconectado <span class="conn-meta">({detail})</span></div></div>'
+        )
+
+    peer_row = ""
+    if peer.active:
+        meta = f' <span class="conn-meta">(desde {_fmt_datetime(peer.started_at)})</span>' if peer.started_at else ""
+        peer_row = (
+            '<div class="conn-row"><span class="dot dot-info"></span>'
+            f"<div><b>Outro agent:</b> {html.escape(peer.label)}{meta}</div></div>"
+        )
+
+    return f'<div class="conn-status">{guardian_row}{peer_row}</div>'
+
+
+_TABS_SCRIPT = """
+<script>
+(function () {
+    var buttons = document.querySelectorAll('.tab-btn');
+    var panels = document.querySelectorAll('.tab-panel');
+    buttons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            buttons.forEach(function (b) { b.classList.remove('active'); });
+            panels.forEach(function (p) { p.hidden = true; });
+            btn.classList.add('active');
+            document.querySelector('.tab-panel[data-panel="' + btn.dataset.tab + '"]').hidden = false;
+        });
+    });
+})();
+</script>
+"""
+
+
 def _render_main_page(config: AgentConfig, state: RuntimeState, query: Optional[dict] = None) -> str:
     query = query or {}
     activity_html = _render_activity_table(list(reversed(state.recent())))
@@ -326,16 +397,28 @@ def _render_main_page(config: AgentConfig, state: RuntimeState, query: Optional[
         {top_links}
         <h1>Guardian Migration Agent — pareado</h1>
         {_default_password_alert(config)}
-        <ul class="meta-list">
-            <li><b>Cliente:</b> {html.escape(config.cliente_nome or '?')}</li>
-            <li><b>Agent ID:</b> {html.escape(config.agent_id or '?')}</li>
-            <li><b>Guardian:</b> {html.escape(config.guardian_base_url)}</li>
-            <li><b>Versão instalada:</b> {html.escape(AGENT_VERSION)}</li>
-        </ul>
-        <h2>Atualização</h2>
-        {_render_update_section(query)}
-        <h2>Atividade recente</h2>
-        {activity_html}
+        <div class="tabs">
+            <button type="button" class="tab-btn active" data-tab="acoes">Ações</button>
+            <button type="button" class="tab-btn" data-tab="config">Configuração</button>
+        </div>
+        <div class="tab-panel" data-panel="acoes">
+            <h2>Atualização</h2>
+            {_render_update_section(query)}
+            <h2>Atividade recente</h2>
+            {activity_html}
+        </div>
+        <div class="tab-panel" data-panel="config" hidden>
+            <h2>Configuração</h2>
+            <ul class="meta-list">
+                <li><b>Cliente:</b> {html.escape(config.cliente_nome or '?')}</li>
+                <li><b>Agent ID:</b> {html.escape(config.agent_id or '?')}</li>
+                <li><b>Guardian:</b> {html.escape(config.guardian_base_url)}</li>
+                <li><b>Versão instalada:</b> {html.escape(AGENT_VERSION)}</li>
+            </ul>
+            <h2>Status de conexão</h2>
+            {_render_connection_status(state)}
+        </div>
+        {_TABS_SCRIPT}
         """
     else:
         body = f"""
