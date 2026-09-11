@@ -6,6 +6,7 @@ Service (service_windows.py) -- a lógica de wiring é a mesma nos dois.
 
 from __future__ import annotations
 
+import collections
 import logging
 import threading
 import time
@@ -33,6 +34,14 @@ POLL_RETRY_WHILE_UNPAIRED_SECONDS = 5
 # auditoria de 30 dias, só ruído de debug local).
 _EVENT_REPORT_SKIP_PREFIXES = ("Comando ",)
 
+# Issue #113: quantos eventos operacionais ficam esperando reenvio se o
+# Guardian estiver inacessível no momento do report -- limite pra não
+# crescer sem parar numa queda longa (favorece os eventos mais recentes,
+# descarta os mais antigos quando a fila enche). Fica só em memória (igual
+# ao resto do RuntimeState) -- não sobrevive a um restart do serviço, mas
+# sobrevive a quedas de conexão com o Guardian enquanto o processo roda.
+_MAX_PENDING_EVENTS = 200
+
 
 class AgentRuntime:
     def __init__(self, state_dir: Optional[Path] = None):
@@ -44,6 +53,8 @@ class AgentRuntime:
         self._threads: list[threading.Thread] = []
         self._http_server = None
         self._peer_server = None
+        self._pending_events_lock = threading.Lock()
+        self._pending_events: collections.deque = collections.deque(maxlen=_MAX_PENDING_EVENTS)
 
     def start_background(self) -> None:
         # Issue #107: instrumentado com timestamps -- builds 11/14/19/20
@@ -108,7 +119,10 @@ class AgentRuntime:
         RuntimeState.record() (pode vir de qualquer thread -- handler HTTP
         da UI local, poller, peer-listener), por isso dispara uma thread
         própria em vez de bloquear quem chamou record() com uma requisição
-        de rede."""
+        de rede. Se a chamada falhar (Guardian fora do ar, etc.), o evento
+        entra na fila de retry em vez de ser descartado -- ver
+        _flush_pending_events(), chamado a cada ciclo de long-poll
+        bem-sucedido."""
         if any(message.startswith(prefix) for prefix in _EVENT_REPORT_SKIP_PREFIXES):
             return
 
@@ -123,9 +137,50 @@ class AgentRuntime:
                 client = GuardianClient(cfg.guardian_base_url)
                 client.report_event(cfg.agent_id, cfg.auth_token, "operational", status, message)
             except Exception:
-                logger.debug("Falha ao reportar evento operacional pro Guardian (nao critico)", exc_info=True)
+                logger.debug("Falha ao reportar evento operacional pro Guardian -- entrando na fila de retry", exc_info=True)
+                with self._pending_events_lock:
+                    self._pending_events.append((status, message))
 
         threading.Thread(target=_send, daemon=True, name="report-event").start()
+
+    def _flush_pending_events(self) -> None:
+        """Reenvia eventos operacionais que falharam antes (fila em
+        memória, ver _report_event_async). Chamado a cada ciclo de
+        long-poll bem-sucedido (on_guardian_status(True) no poller) --
+        na prática, tenta de novo a cada ~25s enquanto o Guardian estiver
+        acessível, até esvaziar a fila."""
+        with self._pending_events_lock:
+            if not self._pending_events:
+                return
+            pending = list(self._pending_events)
+            self._pending_events.clear()
+
+        def _flush() -> None:
+            cfg = self.config_store.load()
+            if not cfg.is_paired:
+                with self._pending_events_lock:
+                    self._pending_events.extend(pending)
+                return
+
+            client = GuardianClient(cfg.guardian_base_url)
+            remaining = []
+            for status, message in pending:
+                try:
+                    client.report_event(cfg.agent_id, cfg.auth_token, "operational", status, message)
+                except Exception:
+                    remaining.append((status, message))
+
+            if remaining:
+                logger.debug("Ainda %d evento(s) pendente(s) apos tentativa de flush", len(remaining))
+                with self._pending_events_lock:
+                    self._pending_events.extend(remaining)
+
+        threading.Thread(target=_flush, daemon=True, name="flush-pending-events").start()
+
+    def _on_guardian_status(self, connected: bool, error: Optional[str] = None) -> None:
+        self.state.set_guardian_status(connected, error)
+        if connected:
+            self._flush_pending_events()
 
     def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -142,7 +197,7 @@ class AgentRuntime:
                 stop_event=self._stop_event,
                 on_activity=self.state.record,
                 handlers=self.handlers,
-                on_guardian_status=self.state.set_guardian_status,
+                on_guardian_status=self._on_guardian_status,
                 on_peer_status=self.state.set_peer_status,
             )
             poller.run_forever()
