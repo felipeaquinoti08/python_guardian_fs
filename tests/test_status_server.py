@@ -9,8 +9,8 @@ import pytest
 
 from migration_agent import status_server as status_server_module
 from migration_agent.config import ConfigStore
-from migration_agent.runtime_state import RuntimeState
-from migration_agent.status_server import make_server
+from migration_agent.runtime_state import ActivityEntry, RuntimeState
+from migration_agent.status_server import _classify_activity, _render_activity_table, make_server
 
 
 class _FakeGuardianClient:
@@ -219,3 +219,33 @@ def test_logout_invalidates_session(running_server):
 
     body = opener.open(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
     assert "entrar" in body.lower()
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("Pareado com sucesso ao cliente 'Cliente Fake'", "success"),
+        ("Comando abc-123 concluído", "success"),
+        ("Comando def-456 falhou: agent não respondeu a tempo", "error"),
+        ("Guardian inacessível: timeout", "error"),
+        ("Tentativa de login com credenciais invalidas na UI local", "error"),
+        ("Comando recebido: run_transfer (abc-123)", "info"),
+    ],
+)
+def test_classify_activity(message, expected):
+    assert _classify_activity(message) == expected
+
+
+def test_render_activity_table_shows_human_readable_timestamp_not_raw_epoch():
+    entries = [ActivityEntry(timestamp=1757600920.123456, message="Pareado com sucesso ao cliente 'X'")]
+    rendered = _render_activity_table(entries)
+
+    assert "<table" in rendered
+    assert "1757600920" not in rendered  # timestamp cru (epoch) nao pode vazar pra UI
+    assert "dot-success" in rendered
+
+
+def test_render_activity_table_empty_state():
+    rendered = _render_activity_table([])
+    assert "Nenhuma atividade ainda" in rendered
+    assert "<table" not in rendered

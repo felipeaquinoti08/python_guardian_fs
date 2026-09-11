@@ -15,6 +15,7 @@ com troca obrigatória incentivada por um aviso na tela até o usuário trocar.
 from __future__ import annotations
 
 import base64
+import datetime
 import html
 import json
 import logging
@@ -134,9 +135,30 @@ _PAGE_STYLE = """
     .meta-list li { font-size: 13px; color: #334155; padding: 6px 0; border-bottom: 1px solid #f1f5f9; }
     .meta-list li:last-child { border-bottom: none; }
     .meta-list b { color: #0f172a; }
-    .activity-list { list-style: none; padding: 0; margin: 0; max-height: 220px; overflow-y: auto; }
-    .activity-list li { font-size: 13px; color: #334155; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
-    .activity-list code { color: #6366f1; font-size: 11px; }
+    .activity-table-wrap { max-height: 320px; overflow-y: auto; overflow-x: auto; border: 1px solid #f1f5f9; border-radius: 12px; }
+    .activity-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .activity-table thead th {
+        position: sticky;
+        top: 0;
+        background: #f8fafc;
+        text-align: left;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #64748b;
+        padding: 8px 12px;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    .activity-table td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; vertical-align: top; }
+    .activity-table tbody tr:last-child td { border-bottom: none; }
+    .activity-table tbody tr:hover { background: #f8fafc; }
+    .activity-table td.activity-dot { width: 10px; padding-right: 0; }
+    .activity-table td.activity-time { white-space: nowrap; color: #64748b; font-variant-numeric: tabular-nums; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .dot-success { background: #22c55e; }
+    .dot-error { background: #ef4444; }
+    .dot-info { background: #94a3b8; }
+    .activity-empty { color: #94a3b8; font-size: 13px; }
     .top-links { display: flex; justify-content: flex-end; gap: 16px; margin-bottom: 12px; }
     .top-links a { color: #64748b; font-size: 12px; text-decoration: none; }
     .top-links a:hover { color: #4f46e5; text-decoration: underline; }
@@ -222,10 +244,44 @@ def _render_change_password_page(cfg: AgentConfig, error: str = "", success: str
     return _page_shell("Trocar senha", body)
 
 
+def _classify_activity(message: str) -> str:
+    """Heurística simples (so pra colorir a linha na tabela, nao muda o
+    dado em si) baseada nas mensagens que o proprio agent gera -- ver
+    agent_runtime.py/poller.py/status_server.py (todo lugar que chama
+    state.record)."""
+    lowered = message.lower()
+    if any(term in lowered for term in ("falh", "erro", "inválid", "invalid", "inacessível", "inacessivel")):
+        return "error"
+    if any(term in lowered for term in ("sucesso", "concluíd", "concluid", "pareado", "disponível", "disponivel")):
+        return "success"
+    return "info"
+
+
+def _render_activity_table(entries) -> str:
+    if not entries:
+        return '<p class="activity-empty">Nenhuma atividade ainda.</p>'
+
+    rows = []
+    for entry in entries:
+        when = datetime.datetime.fromtimestamp(entry.timestamp).strftime("%d/%m/%Y %H:%M:%S")
+        kind = _classify_activity(entry.message)
+        rows.append(
+            "<tr>"
+            f'<td class="activity-dot"><span class="dot dot-{kind}"></span></td>'
+            f'<td class="activity-time">{html.escape(when)}</td>'
+            f"<td>{html.escape(entry.message)}</td>"
+            "</tr>"
+        )
+
+    return (
+        '<div class="activity-table-wrap"><table class="activity-table">'
+        "<thead><tr><th></th><th>Horário</th><th>Evento</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
 def _render_main_page(config: AgentConfig, state: RuntimeState) -> str:
-    activity_html = "".join(
-        f"<li><code>{html.escape(str(e.timestamp))}</code> — {html.escape(e.message)}</li>" for e in reversed(state.recent())
-    ) or "<li>(sem atividade ainda)</li>"
+    activity_html = _render_activity_table(list(reversed(state.recent())))
 
     top_links = '<div class="top-links"><a href="/change-password">Trocar senha</a><a href="/logout">Sair</a></div>'
 
@@ -240,7 +296,7 @@ def _render_main_page(config: AgentConfig, state: RuntimeState) -> str:
             <li><b>Guardian:</b> {html.escape(config.guardian_base_url)}</li>
         </ul>
         <h2>Atividade recente</h2>
-        <ul class="activity-list">{activity_html}</ul>
+        {activity_html}
         """
     else:
         body = f"""
