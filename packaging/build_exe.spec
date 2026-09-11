@@ -52,6 +52,22 @@
 #    separado. Corrigido usando `entrypoint.py` (bootstrap que importa
 #    `migration_agent.__main__` como submodulo de verdade) como script de
 #    entrada em vez do arquivo do pacote diretamente.
+#
+# 5. DESCOBERTO RODANDO O .exe MANUALMENTE NUMA INSTALACAO REAL (via
+#    `msiexec /a ... TARGETDIR=...` pra extrair sem instalar, depois
+#    `guardian-migration-agent.exe selftest` direto no terminal -- unica
+#    forma de ver o traceback real, sem passar pelo sandbox do Custom
+#    Action do MSI): apos o fix (4) acima, o proprio `entrypoint.py`
+#    passou a falhar com `ModuleNotFoundError: No module named
+#    'migration_agent'`. Causa: `pathex=[".."]` e resolvido relativo ao
+#    diretorio de onde o comando `pyinstaller` e invocado (a raiz do repo,
+#    no workflow), NAO relativo a este arquivo .spec como os `scripts`
+#    acima -- apontava pra fora do repo no CI, entao o pacote
+#    `migration_agent` (agora importado de forma absoluta por
+#    entrypoint.py) nunca era encontrado pela analise estatica do
+#    PyInstaller. Corrigido usando `SPECPATH` (variavel injetada pelo
+#    proprio PyInstaller = pasta deste .spec) pra montar um caminho
+#    absoluto que funciona independente de onde `pyinstaller` e chamado.
 
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -76,7 +92,16 @@ except ImportError:
 
 a = Analysis(
     ["entrypoint.py"],
-    pathex=[".."],
+    # SPECPATH (var injetada pelo proprio PyInstaller) = pasta deste
+    # arquivo .spec (packaging/). Usar caminho absoluto baseado nela em vez
+    # de ".." -- "pathex" e resolvido relativo ao diretorio de onde o
+    # comando `pyinstaller` e invocado (o workflow roda da raiz do repo),
+    # NAO relativo ao .spec como os `scripts` acima. Com ".." simples isso
+    # apontava pra fora do repo no CI, e o pacote `migration_agent` (agora
+    # importado de forma absoluta por entrypoint.py) nao era encontrado --
+    # ModuleNotFoundError confirmado rodando o .exe manualmente numa
+    # instalacao real (issue #107).
+    pathex=[os.path.join(SPECPATH, "..")],
     binaries=binaries,
     datas=[],
     # Imports usados condicionalmente (dentro de função, não no topo do
