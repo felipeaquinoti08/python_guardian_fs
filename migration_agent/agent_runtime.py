@@ -17,18 +17,27 @@ from .commands import DEFAULT_HANDLERS, make_run_transfer_handler
 from .config import ConfigStore
 from .peer_listener import PendingTokens, make_peer_listener
 from .poller import AgentPoller
-from .runtime_state import RuntimeState
+from .runtime_state import RuntimeState, classify_activity
 from .status_server import make_server
 
 logger = logging.getLogger(__name__)
 
 POLL_RETRY_WHILE_UNPAIRED_SECONDS = 5
 
+# Issue #113: mensagens que NAO viram evento operacional no histórico de
+# 30 dias do Guardian -- comandos individuais (list_folder,
+# connectivity_check, e principalmente run_transfer) já geram seu próprio
+# registro do lado do Guardian sem precisar de uma chamada de rede extra
+# do agent por comando (ver UniversalMigrationFileJob::recordAgentTransferEvents
+# pra transferências; os outros tipos de comando não têm valor de
+# auditoria de 30 dias, só ruído de debug local).
+_EVENT_REPORT_SKIP_PREFIXES = ("Comando ",)
+
 
 class AgentRuntime:
     def __init__(self, state_dir: Optional[Path] = None):
         self.config_store = ConfigStore(state_dir)
-        self.state = RuntimeState()
+        self.state = RuntimeState(on_record=self._report_event_async)
         self.pending_tokens = PendingTokens()
         self.handlers = DEFAULT_HANDLERS
         self._stop_event = threading.Event()
@@ -92,6 +101,31 @@ class AgentRuntime:
         thread = threading.Thread(target=target, daemon=True, name=name)
         thread.start()
         self._threads.append(thread)
+
+    def _report_event_async(self, message: str) -> None:
+        """Issue #113: reporta um evento operacional pro histórico de 30
+        dias do Guardian, best-effort. Chamado de dentro de
+        RuntimeState.record() (pode vir de qualquer thread -- handler HTTP
+        da UI local, poller, peer-listener), por isso dispara uma thread
+        própria em vez de bloquear quem chamou record() com uma requisição
+        de rede."""
+        if any(message.startswith(prefix) for prefix in _EVENT_REPORT_SKIP_PREFIXES):
+            return
+
+        cfg = self.config_store.load()
+        if not cfg.is_paired:
+            return
+
+        status = classify_activity(message)
+
+        def _send() -> None:
+            try:
+                client = GuardianClient(cfg.guardian_base_url)
+                client.report_event(cfg.agent_id, cfg.auth_token, "operational", status, message)
+            except Exception:
+                logger.debug("Falha ao reportar evento operacional pro Guardian (nao critico)", exc_info=True)
+
+        threading.Thread(target=_send, daemon=True, name="report-event").start()
 
     def _poll_loop(self) -> None:
         while not self._stop_event.is_set():

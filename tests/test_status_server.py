@@ -9,8 +9,8 @@ import pytest
 
 from migration_agent import status_server as status_server_module
 from migration_agent.config import ConfigStore
-from migration_agent.runtime_state import ActivityEntry, RuntimeState
-from migration_agent.status_server import _classify_activity, _render_activity_table, _render_connection_status, make_server
+from migration_agent.runtime_state import ActivityEntry, RuntimeState, classify_activity
+from migration_agent.status_server import _render_activity_table, _render_connection_status, make_server
 
 
 class _FakeGuardianClient:
@@ -233,7 +233,7 @@ def test_logout_invalidates_session(running_server):
     ],
 )
 def test_classify_activity(message, expected):
-    assert _classify_activity(message) == expected
+    assert classify_activity(message) == expected
 
 
 def test_render_activity_table_shows_human_readable_timestamp_not_raw_epoch():

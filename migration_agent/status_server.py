@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from ._version import AGENT_VERSION
 from .api_client import GuardianClient, PairingError
 from .config import AgentConfig, ConfigStore, verify_password
-from .runtime_state import RuntimeState
+from .runtime_state import RuntimeState, classify_activity
 from .self_update import apply_update, check_for_update
 from .webassets import GUARDIAN_LOGO_PNG
 
@@ -268,19 +268,6 @@ def _render_change_password_page(cfg: AgentConfig, error: str = "", success: str
     return _page_shell("Trocar senha", body)
 
 
-def _classify_activity(message: str) -> str:
-    """Heurística simples (so pra colorir a linha na tabela, nao muda o
-    dado em si) baseada nas mensagens que o proprio agent gera -- ver
-    agent_runtime.py/poller.py/status_server.py (todo lugar que chama
-    state.record)."""
-    lowered = message.lower()
-    if any(term in lowered for term in ("falh", "erro", "inválid", "invalid", "inacessível", "inacessivel")):
-        return "error"
-    if any(term in lowered for term in ("sucesso", "concluíd", "concluid", "pareado", "disponível", "disponivel")):
-        return "success"
-    return "info"
-
-
 def _fmt_datetime(timestamp: float) -> str:
     return datetime.datetime.fromtimestamp(timestamp).strftime("%d/%m/%Y %H:%M:%S")
 
@@ -292,7 +279,7 @@ def _render_activity_table(entries) -> str:
     rows = []
     for entry in entries:
         when = _fmt_datetime(entry.timestamp)
-        kind = _classify_activity(entry.message)
+        kind = classify_activity(entry.message)
         rows.append(
             "<tr>"
             f'<td class="activity-dot"><span class="dot dot-{kind}"></span></td>'

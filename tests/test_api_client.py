@@ -111,3 +111,29 @@ def test_download_installer_writes_streamed_chunks_to_dest_path(tmp_path):
     args, kwargs = session.get.call_args
     assert args[0] == "https://guardian.exemplo.com/api/agents/agent-1/installer/download"
     assert kwargs["stream"] is True
+
+
+def test_report_event_posts_expected_payload():
+    session = MagicMock()
+    session.post.return_value = _fake_response(200)
+    client = GuardianClient("https://guardian.exemplo.com", session=session)
+
+    client.report_event("agent-1", "tok", "operational", "success", "Pareado com sucesso", detail={"cliente": "X"})
+
+    args, kwargs = session.post.call_args
+    assert args[0] == "https://guardian.exemplo.com/api/agents/agent-1/events"
+    assert kwargs["json"] == {
+        "type": "operational",
+        "status": "success",
+        "message": "Pareado com sucesso",
+        "detail": {"cliente": "X"},
+    }
+
+
+def test_report_event_raises_on_http_error():
+    session = MagicMock()
+    session.post.return_value = _fake_response(401)
+    client = GuardianClient("https://guardian.exemplo.com", session=session)
+
+    with pytest.raises(Exception):
+        client.report_event("agent-1", "tok", "operational", "error", "falhou")

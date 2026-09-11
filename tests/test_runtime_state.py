@@ -70,3 +70,30 @@ def test_guardian_status_returns_independent_copies():
 
     assert first.connected is True
     assert second.connected is False
+
+
+def test_record_calls_on_record_hook_after_storing_locally():
+    seen = []
+    state = RuntimeState(on_record=seen.append)
+
+    state.record("Pareado com sucesso")
+
+    assert seen == ["Pareado com sucesso"]
+    assert state.recent()[0].message == "Pareado com sucesso"
+
+
+def test_record_survives_on_record_hook_raising():
+    def _boom(message):
+        raise RuntimeError("Guardian inacessível")
+
+    state = RuntimeState(on_record=_boom)
+
+    state.record("Login na UI local")  # nao pode propagar a exceção
+
+    assert state.recent()[0].message == "Login na UI local"
+
+
+def test_record_without_on_record_hook_works_normally():
+    state = RuntimeState()
+    state.record("qualquer coisa")
+    assert state.recent()[0].message == "qualquer coisa"

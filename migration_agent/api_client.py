@@ -33,6 +33,14 @@ refletir no outro.
         header: Authorization: Bearer <auth_token>
         200: bytes do .msi (streamed)
         404: nenhum instalador publicado ainda
+
+    POST {base}/api/agents/{agent_id}/events
+        header: Authorization: Bearer <auth_token>
+        body: {"type": str, "status": "success"|"error"|"info", "message": str, "detail": {...}|None}
+        histórico de 30 dias (issue #113) -- só eventos OPERACIONAIS
+        (pareamento, login, conexão). Eventos de transferência de
+        arquivo não passam por aqui, o Guardian já sabe o resultado de
+        cada arquivo sem precisar que o agent reporte de novo.
 """
 
 from __future__ import annotations
@@ -135,3 +143,14 @@ class GuardianClient:
                 if chunk:
                     f.write(chunk)
         tmp_path.replace(dest_path)
+
+    def report_event(
+        self, agent_id: str, auth_token: str, event_type: str, status: str, message: str, detail: Optional[dict] = None
+    ) -> None:
+        resp = self.session.post(
+            f"{self.base_url}/api/agents/{agent_id}/events",
+            json={"type": event_type, "status": status, "message": message, "detail": detail},
+            headers=self._auth_headers(auth_token),
+            timeout=15,
+        )
+        resp.raise_for_status()
