@@ -200,12 +200,21 @@
     <!--
       Issue #107: wizard minimo (WixUI_Minimal, requer WixUIExtension,
       ver -ext no build-agent-msi.yml) com uma tela extra (ShortcutsDlg)
-      inserida entre a tela de boas-vindas e a de licenca, com checkboxes
-      pras duas Property acima. Padrao documentado do proprio WiX pra
-      inserir uma tela customizada dentro de uma sequencia WixUI_* pronta:
-      republica os eventos "Next"/"Back" dos dialogs vizinhos (WelcomeDlg/
-      LicenseAgreementDlg) com Order maior, que substitui o alvo definido
-      originalmente por WixUI_Minimal.
+      inserida logo apos a tela de boas-vindas/licenca, com checkboxes
+      pras duas Property acima. O WixUI_Minimal desta versao do WiX usa
+      um unico dialog combinado (WelcomeEulaDlg, boas-vindas + texto da
+      licenca numa tela so) seguido direto por ProgressDlg, nao existe
+      um "WelcomeDlg"/"LicenseAgreementDlg" separados nesta sequencia (
+      esses dois soh existem em outros dialog sets, tipo WixUI_InstallDir
+      /WixUI_FeatureTree). Referenciar esses Ids por engano force o
+      linker a puxar o fragmento errado (LicenseAgreementDlg.wxs) junto
+      com WelcomeEulaDlg.wxs, e os dois definem um CheckBox com o mesmo
+      Id "LicenseAccepted", causando LGHT0091 (Duplicate symbol), erro real
+      batido numa run de CI. Padrao documentado do proprio WiX pra
+      inserir uma tela customizada dentro de uma sequencia WixUI_*
+      pronta: republica o evento "Next" do dialog anterior (WelcomeEulaDlg)
+      com Order maior, que substitui o alvo definido originalmente por
+      WixUI_Minimal (ProgressDlg) pelo nosso.
     -->
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
 
@@ -223,18 +232,17 @@
         <Control Id="DesktopCheckBox" Type="CheckBox" X="25" Y="90" Width="300" Height="17" Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Criar atalho na Area de Trabalho" />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="&lt; Voltar">
-          <Publish Event="NewDialog" Value="WelcomeDlg">1</Publish>
+          <Publish Event="NewDialog" Value="WelcomeEulaDlg">1</Publish>
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Avancar &gt;">
-          <Publish Event="NewDialog" Value="LicenseAgreementDlg">1</Publish>
+          <Publish Event="NewDialog" Value="ProgressDlg">1</Publish>
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancelar">
           <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
         </Control>
       </Dialog>
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="ShortcutsDlg" Order="2">1</Publish>
-      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="ShortcutsDlg" Order="2">1</Publish>
+      <Publish Dialog="WelcomeEulaDlg" Control="Next" Event="NewDialog" Value="ShortcutsDlg" Order="3">LicenseAccepted = "1"</Publish>
     </UI>
   </Product>
 </Wix>
