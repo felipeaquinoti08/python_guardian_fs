@@ -121,13 +121,22 @@ $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
 heat.exe dir "$internalDir" -cg InternalFiles -gg -sfrag -srd -dr INTERNALDIR -var var.InternalSourceDir -t packaging\heat_x64_transform.xsl -out packaging\internal_files.wxs
 
 candle.exe "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
-light.exe -ext WixUIExtension packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
+light.exe -ext WixUIExtension -sice:ICE03 -sice:ICE38 -sice:ICE43 -sice:ICE57 packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
 ```
 
 `-ext WixUIExtension` é necessário desde que o instalador ganhou um wizard
-(`WixUI_Minimal` + tela extra de atalhos, ver seção de atalhos abaixo) --
+(`WixUI_Minimal` + tela extra de atalhos, ver seção de atalhos abaixo),
 vem junto com o pacote `wixtoolset` do Chocolatey, não precisa instalar
 nada a mais.
+
+As flags `-sice:ICE03/38/43/57` suprimem falsos positivos reais do
+validador padrão do WiX para o cenário dos atalhos opcionais: shortcuts
+em `ProgramMenuFolder`/`DesktopFolder` num instalador `perMachine`
+(todos os usuários, não só o usuário atual) fazem essas ICEs exigirem
+que a `RegistryValue` usada como KeyPath do componente fique em `HKCU`,
+o que só faz sentido para instalação per-user — com `ALLUSERS=1` (que o
+WiX seta sozinho por causa do `InstallScope="perMachine"` do `Package`),
+`HKLM` é o correto.
 
 ### 4. Publicar manualmente
 

@@ -102,16 +102,26 @@ jobs:
       - name: Build instalador (.msi)
         # Issue #107: -ext WixUIExtension necessario a partir daqui pro
         # wizard com tela de atalhos opcionais (Menu Iniciar/Area de
-        # Trabalho, ver <UIRef Id="WixUI_Minimal"> no installer.wxs) --
-        # sem essa extensao candle.exe/light.exe nao reconhecem
-        # WixUI_Minimal nem os elementos <UI>/<Publish> que dependem dela.
+        # Trabalho, ver <UIRef Id="WixUI_Minimal"> no installer.wxs), sem
+        # essa extensao candle.exe/light.exe nao reconhecem WixUI_Minimal
+        # nem os elementos <UI>/<Publish> que dependem dela.
+        #
+        # -sice:ICE03/38/43/57 suprime falsos positivos reais do
+        # validador padrao do WiX pro nosso cenario deliberado (shortcuts
+        # em ProgramMenuFolder/DesktopFolder + Package InstallScope=
+        # "perMachine", ou seja, instalacao pra todos os usuarios, nao
+        # so o usuario atual): essas ICEs esperam por padrao que a
+        # RegistryValue usada como KeyPath de um componente com shortcut
+        # fique em HKCU, mas isso so faz sentido pra instalacao per-user
+        # -- com ALLUSERS=1 (que o WiX seta sozinho por causa do
+        # InstallScope="perMachine" do Package), HKLM e o correto.
         shell: pwsh
         run: |
           $wixBin = Join-Path $env:WIX "bin"
           $internalDir = Resolve-Path "dist\guardian-migration-agent\_internal"
           & "$wixBin\candle.exe" "-dInternalSourceDir=$internalDir" -ext WixUIExtension packaging\installer.wxs packaging\internal_files.wxs -out packaging\
           if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou" }
-          & "$wixBin\light.exe" -ext WixUIExtension packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
+          & "$wixBin\light.exe" -ext WixUIExtension -sice:ICE03 -sice:ICE38 -sice:ICE43 -sice:ICE57 packaging\installer.wixobj packaging\internal_files.wixobj -out dist\GuardianMigrationAgent.msi
           if ($LASTEXITCODE -ne 0) { throw "light.exe falhou" }
 
       - name: Upload artefato (backup de curto prazo, independente da Release)
